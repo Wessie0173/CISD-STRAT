@@ -1,0 +1,452 @@
+//@version=5
+indicator("Sessions + Key Levels + CISD ", "Sess/Key/CISD/FVG", overlay = true, max_bars_back = 500, max_lines_count = 500, max_boxes_count = 500, max_labels_count = 500)
+
+// ============================================================================
+// === CISD MODULE (integrated & v5-compatible / indicator-only) ==============
+// ============================================================================
+
+groupCISD = "CISD"
+bullishBreakColor = input.color(color.black, "Bull CISD", inline = "bup", group=groupCISD)
+bearishBreakColor = input.color(color.black, "Bear CISD", inline = "bep", group=groupCISD)
+
+bullStr = input.string("+CISD", " ", tooltip = "Text to be displayed next to the +CISD level.", inline = "bup", group=groupCISD)
+bearStr = input.string("-CISD", " ", tooltip = "Text to be displayed next to the -CISD level.", inline = "bep", group=groupCISD)
+
+bullishAlerts = input.bool(false, "Alert?", tooltip = "When enabled, alerts will trigger when close crosses ABOVE the current '+CISD' level.", inline = "bup", group=groupCISD)
+bearishAlerts = input.bool(false, "Alert?", tooltip = "When enabled, alerts will trigger when close crosses ABOVE the current '-CISD' level.", inline = "bep", group=groupCISD)
+
+lineWidthCisd   = input.int(1, "Line Width", minval=1, maxval=5, group=groupCISD)
+lookAheadBars   = input.int(5, "Line Extension Bars", minval=1, maxval = 5, group=groupCISD)
+styleOption     = input.string("Solid (─)", title="Line Style", options=["Solid (─)", "Dotted (┈)", "Dashed (╌)"], group=groupCISD)
+keepLevels      = input.bool(false, "Keep old CISD levels", group=groupCISD)
+
+// CISD table
+groupCISDTable  = "CISD Table"
+showTable       = input(false, title="Enable stat table", group = groupCISDTable)
+tablePosition   = input.string(defval = "Top Right", title = "Table Position", 
+  options=["Top Right", "Bottom Right", "Middle Right", "Bottom Center", "Middle Left"], group = groupCISDTable)
+
+// Line style mapping
+lineStyleCisd = styleOption == "Dotted (┈)" ? line.style_dotted :
+     styleOption == "Dashed (╌)" ? line.style_dashed :
+         line.style_solid
+
+// --- Types
+type MarketStructure
+    float topPrice
+    float bottomPrice
+    bool isBullish
+
+type CisdRec
+    line level
+    label txt
+    bool completed
+
+// --- Vars
+var line   lastTopLine   = na
+var line   lastBottomLine= na
+var MarketStructure currentStructure = MarketStructure.new(0.0, 0.0, false)
+
+var CisdRec[] cisdLevelsBu = array.new<CisdRec>()   // holds -CISD lines built after bullish breaks
+var CisdRec[] cisdLevelsBe = array.new<CisdRec>()   // holds +CISD lines built after bearish breaks
+
+var bool  isBullishPullback    = false
+var bool  isBearishPullback    = false
+
+var float potentialTopPrice    = na
+var float potentialBottomPrice = na
+
+var int   bullishBreakIndex    = na
+var int   bearishBreakIndex    = na
+
+var bool  cisdCurrentState     = false
+
+gettablePos(pos) =>
+    pos == "Top Right"    ? position.top_right :
+     pos == "Bottom Right" ? position.bottom_right :
+     pos == "Middle Right" ? position.middle_right :
+     pos == "Bottom Center"? position.bottom_center :
+                              position.middle_left
+
+// Pullback Detection
+bearishPullbackDetected = close[1] > open[1]
+bullishPullbackDetected = close[1] < open[1]
+
+// Bearish Pullback Logic
+if bearishPullbackDetected and not isBearishPullback
+    isBearishPullback := true
+    potentialTopPrice := open[1]
+    bullishBreakIndex := bar_index[1]
+
+// Bullish Pullback Logic
+if bullishPullbackDetected and not isBullishPullback
+    isBullishPullback := true
+    potentialBottomPrice := open[1]
+    bearishBreakIndex := bar_index[1]
+
+// Update Potential Levels During Pullbacks
+if isBullishPullback
+    if open < potentialBottomPrice
+        potentialBottomPrice := open
+        bearishBreakIndex := bar_index
+    if (close < open) and (open > potentialBottomPrice)
+        potentialBottomPrice := open
+        bearishBreakIndex := bar_index     
+
+if isBearishPullback
+    if open > potentialTopPrice
+        potentialTopPrice := open
+        bullishBreakIndex := bar_index
+    if (close > open) and open < potentialTopPrice
+        potentialTopPrice := open
+        bullishBreakIndex := bar_index      
+
+// Structure Updates - Bearish Break
+if low < currentStructure.bottomPrice
+    currentStructure.bottomPrice := low
+    currentStructure.isBullish := false
+    
+    if isBearishPullback and (bar_index-bullishBreakIndex != 0)
+        currentStructure.topPrice := math.max(high[bar_index-bullishBreakIndex],high[bar_index-bullishBreakIndex+1])
+        isBearishPullback := false
+        cisdBearLine = line.new(bullishBreakIndex, potentialTopPrice, bar_index + lookAheadBars, potentialTopPrice, color=bullishBreakColor, width=lineWidthCisd, style = lineStyleCisd)
+        cisdBearLbl  = label.new(bar_index + lookAheadBars, potentialTopPrice, bullStr, color=color.new(color.white,100), textcolor=bullishBreakColor, style=label.style_label_left, size = size.small)
+        array.push(cisdLevelsBe, CisdRec.new(cisdBearLine, cisdBearLbl, false))
+    else if close[1] > open[1] and close < open
+        currentStructure.topPrice := high[1]
+        isBearishPullback := false
+        cisdBearLine = line.new(bullishBreakIndex, potentialTopPrice, bar_index + lookAheadBars, potentialTopPrice, color=bullishBreakColor, width=lineWidthCisd, style = lineStyleCisd)
+        cisdBearLbl  = label.new(bar_index + lookAheadBars, potentialTopPrice, bullStr, color=color.new(color.white,100), textcolor=bullishBreakColor, style=label.style_label_left, size = size.small)
+        array.push(cisdLevelsBe, CisdRec.new(cisdBearLine, cisdBearLbl, false))
+
+// Structure Updates - Bullish Break
+if high > currentStructure.topPrice
+    currentStructure.isBullish := true
+    currentStructure.topPrice := high
+    
+    if isBullishPullback and (bar_index-bearishBreakIndex != 0)
+        currentStructure.bottomPrice := math.min(low[bar_index-bearishBreakIndex],low[bar_index-bearishBreakIndex+1])
+        isBullishPullback := false
+        cisdBullLine = line.new(bearishBreakIndex, potentialBottomPrice, bar_index + lookAheadBars, potentialBottomPrice, color=bearishBreakColor, width=lineWidthCisd, style = lineStyleCisd)
+        cisdBullLbl  = label.new(bar_index + lookAheadBars, potentialBottomPrice, bearStr, color=color.new(color.white,100), textcolor=bearishBreakColor, style=label.style_label_left, size = size.small)
+        array.push(cisdLevelsBu, CisdRec.new(cisdBullLine, cisdBullLbl, false))
+    else if close[1] < open[1] and close > open
+        currentStructure.bottomPrice := low[1]
+        isBullishPullback := false
+        cisdBullLine = line.new(bearishBreakIndex, potentialBottomPrice, bar_index + lookAheadBars, potentialBottomPrice, color=bearishBreakColor, width=lineWidthCisd, style = lineStyleCisd)
+        cisdBullLbl  = label.new(bar_index + lookAheadBars, potentialBottomPrice, bearStr, color=color.new(color.white,100), textcolor=bearishBreakColor, style=label.style_label_left, size = size.small)
+        array.push(cisdLevelsBu, CisdRec.new(cisdBullLine, cisdBullLbl, false))
+
+// Only keep latest CISD level (if keepLevels=false)
+if array.size(cisdLevelsBu) > 1 and not keepLevels
+    latestBu = array.shift(cisdLevelsBu)
+    line.delete(latestBu.level)
+    label.delete(latestBu.txt)
+
+if array.size(cisdLevelsBe) > 1 and not keepLevels
+    latestBe = array.shift(cisdLevelsBe)
+    line.delete(latestBe.level)
+    label.delete(latestBe.txt)
+
+// Drive/complete +CISD (bearish pullback) line
+var bool bullFormed = false
+var bool bearFormed = false
+
+if array.size(cisdLevelsBu) >= 1
+    latestRecBu = array.get(cisdLevelsBu,0)
+    latestYBu   = line.get_y2(latestRecBu.level)
+    if not (close < latestYBu) and not latestRecBu.completed
+        line.set_x2(latestRecBu.level, bar_index+lookAheadBars)
+        label.set_x(latestRecBu.txt, bar_index+lookAheadBars)
+    if close < latestYBu and not latestRecBu.completed
+        latestRecBu.completed := true
+        // spawn opposite level
+        cisdBearLine2 = line.new(bullishBreakIndex, potentialTopPrice, bar_index + lookAheadBars, potentialTopPrice, color=bullishBreakColor, width=lineWidthCisd, style = lineStyleCisd)
+        cisdBearLbl2  = label.new(bar_index + lookAheadBars, potentialTopPrice, bullStr, color=color.new(color.white,100), textcolor=bullishBreakColor, style=label.style_label_left, size = size.small)
+        array.push(cisdLevelsBe, CisdRec.new(cisdBearLine2, cisdBearLbl2, false))
+        cisdCurrentState := false
+        bearFormed := true
+
+// Drive/complete -CISD (bullish pullback) line
+if array.size(cisdLevelsBe) >= 1 and not keepLevels
+    latestRecBe = array.get(cisdLevelsBe,0)
+    latestYBe   = line.get_y2(latestRecBe.level)
+    if not (close > latestYBe) and not latestRecBe.completed
+        line.set_x2(latestRecBe.level, bar_index+lookAheadBars)
+        label.set_x(latestRecBe.txt, bar_index+lookAheadBars)
+    if close > latestYBe and not latestRecBe.completed
+        latestRecBe.completed := true
+        // spawn opposite level
+        cisdBullLine2 = line.new(bearishBreakIndex, potentialBottomPrice, bar_index + lookAheadBars, potentialBottomPrice, color=bearishBreakColor, width=lineWidthCisd, style = lineStyleCisd)
+        cisdBullLbl2  = label.new(bar_index + lookAheadBars, potentialBottomPrice, bearStr, color=color.new(color.white,100), textcolor=bearishBreakColor, style=label.style_label_left, size = size.small)
+        array.push(cisdLevelsBu, CisdRec.new(cisdBullLine2, cisdBullLbl2, false))
+        cisdCurrentState := true
+        bullFormed := true
+
+// CISD Table
+if showTable and barstate.islast
+    var tbl = table.new(gettablePos(tablePosition), 4, 4, bgcolor=chart.bg_color, border_color=chart.fg_color, frame_color = chart.fg_color, frame_width = 1, border_width = 1)
+    table.cell(tbl, 0,0, syminfo.ticker+", "+timeframe.period+" neo|", text_size = size.tiny, text_color = chart.fg_color)
+    table.cell(tbl, 0, 1, "Current State", text_color=chart.bg_color, text_size=size.small, bgcolor = chart.fg_color)
+    table.cell(tbl, 0, 2, cisdCurrentState ? "Bullish" : "Bearish",  text_color=chart.fg_color, text_size=size.small)
+
+// --- Expose latest CISD levels (for alerts/filters)
+getLatestCisdBeY() =>
+    array.size(cisdLevelsBe) > 0 ? line.get_y2(array.get(cisdLevelsBe,0).level) : na
+getLatestCisdBuY() =>
+    array.size(cisdLevelsBu) > 0 ? line.get_y2(array.get(cisdLevelsBu,0).level) : na
+
+latestPlusCISD  = getLatestCisdBeY() // "+CISD"
+latestMinusCISD = getLatestCisdBuY() // "-CISD"
+
+// Alertconditions: cross ABOVE +CISD/-CISD
+ac_plusCisd  = bullishAlerts and not na(latestPlusCISD)  and ta.crossover(close, latestPlusCISD)
+ac_minusCisd = bearishAlerts and not na(latestMinusCISD) and ta.crossover(close, latestMinusCISD)
+alertcondition(ac_plusCisd,  title="+CISD Cross Up",  message="+CISD crossed up")
+alertcondition(ac_minusCisd, title="-CISD Cross Up",  message="-CISD crossed up")
+
+// Optional: Alerts when a new CISD is formed
+alertcondition(bullFormed, title="Bullish CISD Formed", message="Bullish CISD formed")
+alertcondition(bearFormed, title="Bearish CISD Formed", message="Bearish CISD formed")
+
+// ============================================================================
+// === SESSIONS + KEY LEVELS (indicator-only) =================================
+// ============================================================================
+
+// Settings: Sessions
+// Session A
+show_sesa = input(true, '', inline = 'sesa', group = 'Session A')
+sesa_txt  = input('New York', '', inline = 'sesa', group = 'Session A')
+sesa_ses  = input.session('1300-2200', '', inline = 'sesa', group = 'Session A')
+sesa_css  = input.color(#ff5d00, '', inline = 'sesa', group = 'Session A')
+
+sesa_range     = input(true, 'Range', inline = 'sesa_overlays', group = 'Session A')
+sesa_maxmin    = input(false, 'Max/Min', inline = 'sesa_overlays', group = 'Session A')
+
+// Session B
+show_sesb = input(true, '', inline = 'sesb', group = 'Session B')
+sesb_txt  = input('London', '', inline = 'sesb', group = 'Session B')
+sesb_ses  = input.session('0700-1600', '', inline = 'sesb', group = 'Session B')
+sesb_css  = input.color(#2157f3, '', inline = 'sesb', group = 'Session B')
+
+sesb_range     = input(true, 'Range', inline = 'sesb_overlays', group = 'Session B')
+sesb_maxmin    = input(false, 'Max/Min', inline = 'sesb_overlays', group = 'Session B')
+
+// Session C
+show_sesc = input(true, '', inline = 'sesc', group = 'Session C')
+sesc_txt  = input('Tokyo', '', inline = 'sesc', group = 'Session C')
+sesc_ses  = input.session('0000-0900', '', inline = 'sesc', group = 'Session C')
+sesc_css  = input.color(#e91e63, '', inline = 'sesc', group = 'Session C')
+
+sesc_range     = input(true, 'Range', inline = 'sesc_overlays', group = 'Session C')
+sesc_maxmin    = input(false, 'Max/Min', inline = 'sesc_overlays', group = 'Session C')
+
+// Session D
+show_sesd = input(true, '', inline = 'sesd', group = 'Session D')
+sesd_txt  = input('Sydney', '', inline = 'sesd', group = 'Session D')
+sesd_ses  = input.session('2100-0600', '', inline = 'sesd', group = 'Session D')
+sesd_css  = input.color(#ffeb3b, '', inline = 'sesd', group = 'Session D')
+
+sesd_range     = input(true, 'Range', inline = 'sesd_overlays', group = 'Session D')
+sesd_maxmin    = input(false, 'Max/Min', inline = 'sesd_overlays', group = 'Session D')
+
+// Timezones
+tz_incr      = input.int(0, 'UTC (+/-)', group = 'Timezone')
+use_exchange = input(false, 'Use Exchange Timezone', group = 'Timezone')
+
+// Range visuals
+bg_transp   = input.float(90, 'Range Area Transparency', group = 'Ranges Settings')
+show_outline= input(true, 'Range Outline', group = 'Ranges Settings')
+show_txt    = input(true, 'Range Label', group = 'Ranges Settings')
+
+// Previous Period Levels
+show_pdh   = input.bool(true,  'Prev Day High', inline = 'pdh', group = 'Previous Periods')
+pdh_color  = input.color(color.new(color.green, 0), '', inline = 'pdh', group = 'Previous Periods')
+show_pdl   = input.bool(true,  'Prev Day Low', inline = 'pdl', group = 'Previous Periods')
+pdl_color  = input.color(color.new(color.red,   0), '', inline = 'pdl', group = 'Previous Periods')
+show_pwh   = input.bool(false, 'Prev Week High', inline = 'pwh', group = 'Previous Periods')
+pwh_color  = input.color(color.new(color.blue,  0), '', inline = 'pwh', group = 'Previous Periods')
+show_pwl   = input.bool(false, 'Prev Week Low', inline = 'pwl', group = 'Previous Periods')
+pwl_color  = input.color(color.new(color.orange,0), '', inline = 'pwl', group = 'Previous Periods')
+
+// Fair Value Gaps (FVG)
+show_fvg        = input.bool(true, 'Show FVGs', group = 'Fair Value Gaps')
+fvg_extend      = input.int(10, 'Extend FVGs', group = 'Fair Value Gaps')
+fvg_up_color    = input.color(#2962ff, 'Bullish color', group = 'Fair Value Gaps')
+fvg_down_color  = input.color(#e91e63, 'Bearish color', group = 'Fair Value Gaps')
+fvg_consistency = input.bool(true, 'Consistency rule', group = 'Fair Value Gaps')
+
+//-----------------------------------------------------------------------------
+// Helpers & sessions
+//-----------------------------------------------------------------------------
+n  = bar_index
+tf = timeframe.period
+var tz = use_exchange ? syminfo.timezone : str.format('UTC{0}{1}', tz_incr >= 0 ? '+' : '-', math.abs(tz_incr))
+
+get_avg(session)=>
+    var len = 1
+    var float csma = na
+    var float sma = na
+    if session > session[1]
+        len := 1
+        csma := close
+    if session and session == session[1]
+        len += 1
+        csma += close
+        sma := csma / len
+    sma
+
+get_range(session, session_name, session_css)=>
+    var t = 0
+    var max = high
+    var min = low
+    var box bx = na
+    var label lbl = na
+    if session > session[1]
+        t := time
+        max := high
+        min := low
+        bx := box.new(n, max, n, min, bgcolor = color.new(session_css, bg_transp), border_color = show_outline ? session_css : na, border_style = line.style_dotted)
+        if show_txt
+            lbl := label.new(t, max, session_name, xloc = xloc.bar_time, textcolor = session_css, style = label.style_label_down, color = color.new(color.white, 100), size = size.tiny)
+    if session and session == session[1]
+        max := math.max(high, max)
+        min := math.min(low, min)
+        box.set_top(bx, max)
+        box.set_rightbottom(bx, n, min)
+        if show_txt
+            label.set_xy(lbl, int(math.avg(t, time)), max)
+    [session ? na : max, session ? na : min]
+
+// Session states
+is_sesa = math.sign(nz(time(tf, sesa_ses, tz)))
+is_sesb = math.sign(nz(time(tf, sesb_ses, tz)))
+is_sesc = math.sign(nz(time(tf, sesc_ses, tz)))
+is_sesd = math.sign(nz(time(tf, sesd_ses, tz)))
+
+//-----------------------------------------------------------------------------
+// Overlays: draw session ranges & optional max/min lines
+//-----------------------------------------------------------------------------
+var float max_sesa = na
+var float min_sesa = na
+var float max_sesb = na
+var float min_sesb = na
+var float max_sesc = na
+var float min_sesc = na
+var float max_sesd = na
+var float min_sesd = na
+
+if show_sesa and sesa_range
+    [maxA, minA] = get_range(is_sesa, sesa_txt, sesa_css)
+    max_sesa := maxA
+    min_sesa := minA
+
+if show_sesb and sesb_range
+    [maxB, minB] = get_range(is_sesb, sesb_txt, sesb_css)
+    max_sesb := maxB
+    min_sesb := minB
+
+if show_sesc and sesc_range
+    [maxC, minC] = get_range(is_sesc, sesc_txt, sesc_css)
+    max_sesc := maxC
+    min_sesc := minC
+
+if show_sesd and sesd_range
+    [maxD, minD] = get_range(is_sesd, sesd_txt, sesd_css)
+    max_sesd := maxD
+    min_sesd := minD
+
+plot(sesa_maxmin ? max_sesa : na, 'Session A Maximum', sesa_css, 1, plot.style_linebr)
+plot(sesa_maxmin ? min_sesa : na, 'Session A Minimum', sesa_css, 1, plot.style_linebr)
+plot(sesb_maxmin ? max_sesb : na, 'Session B Maximum', sesb_css, 1, plot.style_linebr)
+plot(sesb_maxmin ? min_sesb : na, 'Session B Minimum', sesb_css, 1, plot.style_linebr)
+plot(sesc_maxmin ? max_sesc : na, 'Session C Maximum', sesc_css, 1, plot.style_linebr)
+plot(sesc_maxmin ? min_sesc : na, 'Session C Minimum', sesc_css, 1, plot.style_linebr)
+plot(sesd_maxmin ? max_sesd : na, 'Session D Maximum', sesd_css, 1, plot.style_linebr)
+plot(sesd_maxmin ? min_sesd : na, 'Session D Minimum', sesd_css, 1, plot.style_linebr)
+
+//-----------------------------------------------------------------------------
+// Previous period key levels
+//-----------------------------------------------------------------------------
+prev_day_high  = request.security(syminfo.tickerid, 'D', high[1], lookahead = barmerge.lookahead_on)
+prev_day_low   = request.security(syminfo.tickerid, 'D', low[1],  lookahead = barmerge.lookahead_on)
+prev_week_high = request.security(syminfo.tickerid, 'W', high[1], lookahead = barmerge.lookahead_on)
+prev_week_low  = request.security(syminfo.tickerid, 'W', low[1],  lookahead = barmerge.lookahead_on)
+
+is_new_day  = ta.change(time('D'))
+is_new_week = ta.change(time('W'))
+
+var line pdh_line = na
+var line pdl_line = na
+var line pwh_line = na
+var line pwl_line = na
+
+if is_new_day
+    line.delete(pdh_line)
+    line.delete(pdl_line)
+    if show_pdh
+        pdh_line := line.new(bar_index, prev_day_high, bar_index, prev_day_high, extend = extend.none, color = pdh_color)
+    if show_pdl
+        pdl_line := line.new(bar_index, prev_day_low, bar_index, prev_day_low, extend = extend.none, color = pdl_color)
+if show_pdh and na(pdh_line)
+    pdh_line := line.new(bar_index, prev_day_high, bar_index, prev_day_high, extend = extend.none, color = pdh_color)
+if show_pdl and na(pdl_line)
+    pdl_line := line.new(bar_index, prev_day_low, bar_index, prev_day_low, extend = extend.none, color = pdl_color)
+if show_pdh and not na(pdh_line)
+    line.set_x2(pdh_line, bar_index)
+    line.set_color(pdh_line, pdh_color)
+else
+    line.delete(pdh_line)
+    pdh_line := na
+if show_pdl and not na(pdl_line)
+    line.set_x2(pdl_line, bar_index)
+    line.set_color(pdl_line, pdl_color)
+else
+    line.delete(pdl_line)
+    pdl_line := na
+
+if is_new_week
+    line.delete(pwh_line)
+    line.delete(pwl_line)
+    if show_pwh
+        pwh_line := line.new(bar_index, prev_week_high, bar_index, prev_week_high, extend = extend.none, color = pwh_color)
+    if show_pwl
+        pwl_line := line.new(bar_index, prev_week_low, bar_index, prev_week_low, extend = extend.none, color = pwl_color)
+if show_pwh and na(pwh_line)
+    pwh_line := line.new(bar_index, prev_week_high, bar_index, prev_week_high, extend = extend.none, color = pwh_color)
+if show_pwl and na(pwl_line)
+    pwl_line := line.new(bar_index, prev_week_low, bar_index, prev_week_low, extend = extend.none, color = pwl_color)
+if show_pwh and not na(pwh_line)
+    line.set_x2(pwh_line, bar_index)
+    line.set_color(pwh_line, pwh_color)
+else
+    line.delete(pwh_line)
+    pwh_line := na
+if show_pwl and not na(pwl_line)
+    line.set_x2(pwl_line, bar_index)
+    line.set_color(pwl_line, pwl_color)
+else
+    line.delete(pwl_line)
+    pwl_line := na
+
+// Visual cross markers (optional)
+plotshape(show_pdh and ta.crossover(close, prev_day_high),  title='Cross Prev Day High',  location=location.abovebar, color=pdh_color, style=shape.cross, size=size.tiny)
+plotshape(show_pdl and ta.crossunder(close, prev_day_low), title='Cross Prev Day Low',   location=location.belowbar,  color=pdl_color, style=shape.cross, size=size.tiny)
+plotshape(show_pwh and ta.crossover(close, prev_week_high), title='Cross Prev Week High', location=location.abovebar, color=pwh_color, style=shape.cross, size=size.tiny)
+plotshape(show_pwl and ta.crossunder(close, prev_week_low),  title='Cross Prev Week Low', location=location.belowbar, color=pwl_color, style=shape.cross, size=size.tiny)
+
+// ============================================================================
+// === Fair Value Gaps (visuals only) =========================================
+// ============================================================================
+bfvg = low > high[2] and (not fvg_consistency or (close > open and close[1] > open[1] and close[2] > open[2]))
+sfvg = high < low[2] and (not fvg_consistency or (close < open and close[1] < open[1] and close[2] < open[2]))
+
+if show_fvg and bfvg
+    box.new(n - 2, low, n + fvg_extend, high[2],
+      border_color = color.new(color.gray, 100),
+      bgcolor = color.new(fvg_up_color, 85))
+
+if show_fvg and sfvg
+    box.new(n - 2, high, n + fvg_extend, low[2],
+      border_color = color.new(color.gray, 100),
+      bgcolor = color.new(fvg_down_color, 85))
