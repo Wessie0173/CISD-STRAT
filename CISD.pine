@@ -464,3 +464,46 @@ if show_fvg and sfvg
     box.new(n - 2, high, n + fvg_extend, low[2],
       border_color = color.new(color.gray, 100),
       bgcolor = color.new(fvg_down_color, 85))
+
+    // ============================================================================
+// === Price Action Management Tool (Bullish + Bearish) =======================
+// ============================================================================
+
+// --- Inputs ---
+selectedTimeframe_PA = input.timeframe("15", title="Select Timeframe for Price Action", options=["1", "5", "10", "15", "30", "60", "240", "D"], tooltip="Choose the timeframe for price action calculations")
+adjust_pct = input.float(0.0, "Price Action Line Adjustment (%)", minval=-100, maxval=100, step=0.1, tooltip="Adjust the Price Action Line up or down by a percentage")
+
+// --- Bullish Price Action Logic (evaluated in the HTF context) ---
+bullishPriceAction_HTF() =>
+    isGreen = close > open
+    prevIsRed = close[1] < open[1]
+    cond1 = isGreen and close > high[1]
+    cond2 = isGreen and close > open[1] and prevIsRed
+    cond1 or cond2 ? low : na
+
+// --- Bearish Price Action Logic (evaluated in the HTF context) ---
+bearishPriceAction_HTF() =>
+    isRed = close < open
+    prevIsGreen = close[1] > open[1]
+    cond1 = isRed and close < low[1]
+    cond2 = isRed and close < open[1] and prevIsGreen
+    cond1 or cond2 ? high : na
+
+// --- Retrieve from Higher Timeframe, locked to CLOSED HTF bars ---
+bullishClosedHTF = request.security(
+     syminfo.tickerid, selectedTimeframe_PA,
+     ta.valuewhen(barstate.isconfirmed, bullishPriceAction_HTF(), 0),
+     lookahead=barmerge.lookahead_off)
+
+bearishClosedHTF = request.security(
+     syminfo.tickerid, selectedTimeframe_PA,
+     ta.valuewhen(barstate.isconfirmed, bearishPriceAction_HTF(), 0),
+     lookahead=barmerge.lookahead_off)
+
+// --- Adjusted Outputs (applied after HTF close-only lock) ---
+bullishLine = na(bullishClosedHTF) ? na : bullishClosedHTF * (1 + adjust_pct / 100)
+bearishLine = na(bearishClosedHTF) ? na : bearishClosedHTF * (1 + adjust_pct / 100)
+
+// --- Plots ---
+plot(bullishLine, color=color.new(color.green, 0), title="Bullish Price Action Line", linewidth=2)
+plot(bearishLine, color=color.new(color.red, 0), title="Bearish Price Action Line", linewidth=2)
