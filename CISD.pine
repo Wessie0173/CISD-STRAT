@@ -1,20 +1,15 @@
 //@version=5
 indicator("Sessions + Key Levels + CISD ", "Sess/Key/CISD/FVG", overlay = true, max_bars_back = 500, max_lines_count = 500, max_boxes_count = 500, max_labels_count = 500)
-
 // ============================================================================
 // === CISD MODULE (integrated & v5-compatible / indicator-only) ==============
 // ============================================================================
-
 groupCISD = "CISD"
 bullishBreakColor = input.color(color.black, "Bull CISD", inline = "bup", group=groupCISD)
 bearishBreakColor = input.color(color.black, "Bear CISD", inline = "bep", group=groupCISD)
-
 bullStr = input.string("+CISD", " ", tooltip = "Text to be displayed next to the +CISD level.", inline = "bup", group=groupCISD)
 bearStr = input.string("-CISD", " ", tooltip = "Text to be displayed next to the -CISD level.", inline = "bep", group=groupCISD)
-
 bullishAlerts = input.bool(false, "Alert?", tooltip = "When enabled, alerts will trigger when close crosses ABOVE the current '+CISD' level.", inline = "bup", group=groupCISD)
 bearishAlerts = input.bool(false, "Alert?", tooltip = "When enabled, alerts will trigger when close crosses ABOVE the current '-CISD' level.", inline = "bep", group=groupCISD)
-
 lineWidthCisd   = input.int(1, "Line Width", minval=1, maxval=5, group=groupCISD)
 lookAheadBars   = input.int(5, "Line Extension Bars", minval=1, maxval = 5, group=groupCISD)
 styleOption     = input.string("Solid (─)", title="Line Style", options=["Solid (─)", "Dotted (┈)", "Dashed (╌)"], group=groupCISD)
@@ -36,7 +31,6 @@ type MarketStructure
     float topPrice
     float bottomPrice
     bool isBullish
-
 type CisdRec
     line level
     label txt
@@ -46,19 +40,14 @@ type CisdRec
 var line   lastTopLine   = na
 var line   lastBottomLine= na
 var MarketStructure currentStructure = MarketStructure.new(0.0, 0.0, false)
-
 var CisdRec[] cisdLevelsBu = array.new<CisdRec>()   // holds -CISD lines built after bullish breaks
 var CisdRec[] cisdLevelsBe = array.new<CisdRec>()   // holds +CISD lines built after bearish breaks
-
 var bool  isBullishPullback    = false
 var bool  isBearishPullback    = false
-
 var float potentialTopPrice    = na
 var float potentialBottomPrice = na
-
 var int   bullishBreakIndex    = na
 var int   bearishBreakIndex    = na
-
 var bool  cisdCurrentState     = false
 
 gettablePos(pos) =>
@@ -142,7 +131,6 @@ if array.size(cisdLevelsBu) > 1 and not keepLevels
     latestBu = array.shift(cisdLevelsBu)
     line.delete(latestBu.level)
     label.delete(latestBu.txt)
-
 if array.size(cisdLevelsBe) > 1 and not keepLevels
     latestBe = array.shift(cisdLevelsBe)
     line.delete(latestBe.level)
@@ -151,7 +139,6 @@ if array.size(cisdLevelsBe) > 1 and not keepLevels
 // Drive/complete +CISD (bearish pullback) line
 var bool bullFormed = false
 var bool bearFormed = false
-
 if array.size(cisdLevelsBu) >= 1
     latestRecBu = array.get(cisdLevelsBu,0)
     latestYBu   = line.get_y2(latestRecBu.level)
@@ -190,14 +177,14 @@ if showTable and barstate.islast
     table.cell(tbl, 0, 1, "Current State", text_color=chart.bg_color, text_size=size.small, bgcolor = chart.fg_color)
     table.cell(tbl, 0, 2, cisdCurrentState ? "Bullish" : "Bearish",  text_color=chart.fg_color, text_size=size.small)
 
-// --- Expose latest CISD levels (for alerts/filters)
+// --- Expose latest CISD levels (for alerts/filters) — use LAST element always
 getLatestCisdBeY() =>
-    array.size(cisdLevelsBe) > 0 ? line.get_y2(array.get(cisdLevelsBe,0).level) : na
+    array.size(cisdLevelsBe) > 0 ? line.get_y2(array.get(cisdLevelsBe, array.size(cisdLevelsBe) - 1).level) : na
 getLatestCisdBuY() =>
-    array.size(cisdLevelsBu) > 0 ? line.get_y2(array.get(cisdLevelsBu,0).level) : na
+    array.size(cisdLevelsBu) > 0 ? line.get_y2(array.get(cisdLevelsBu, array.size(cisdLevelsBu) - 1).level) : na
 
-latestPlusCISD  = getLatestCisdBeY() // "+CISD"
-latestMinusCISD = getLatestCisdBuY() // "-CISD"
+latestPlusCISD  = getLatestCisdBeY() // "+CISD" (from bearish pullback)
+latestMinusCISD = getLatestCisdBuY() // "-CISD" (from bullish pullback)
 
 // Alertconditions: cross ABOVE +CISD/-CISD
 ac_plusCisd  = bullishAlerts and not na(latestPlusCISD)  and ta.crossover(close, latestPlusCISD)
@@ -210,43 +197,65 @@ alertcondition(bullFormed, title="Bullish CISD Formed", message="Bullish CISD fo
 alertcondition(bearFormed, title="Bearish CISD Formed", message="Bearish CISD formed")
 
 // ============================================================================
+// === SELL label: only on the crossunder bar (red close below LAST -CISD) ====
+// ============================================================================
+bearishCisdLevel = latestMinusCISD
+// Fires exactly once: the bar where close crosses from above to below the -CISD, and the candle is red
+sellCond = not na(bearishCisdLevel) and ta.crossunder(close, bearishCisdLevel) and (close < open)
+if sellCond
+    label.new(bar_index, high, "SELL",
+         style     = label.style_label_down,
+         color     = color.red,
+         textcolor = color.white,
+         size      = size.tiny)
+// Optional alert for that exact event
+alertcondition(sellCond, title="SELL: red crossunder -CISD", message="SELL: Red candle crossed under -CISD on {{ticker}} {{interval}} at {{close}}")
+
+// ============================================================================
+// === BUY label: only on the crossover bar (green close above LAST +CISD) ====
+// ============================================================================
+bullishCisdLevel = latestPlusCISD
+// Fires exactly once: the bar where close crosses from below to above the +CISD, and the candle is green
+buyCond = not na(bullishCisdLevel) and ta.crossover(close, bullishCisdLevel) and (close > open)
+if buyCond
+    label.new(bar_index, low, "BUY",
+         style     = label.style_label_up,
+         color     = color.new(color.green, 0),
+         textcolor = color.white,
+         size      = size.tiny)
+// Optional alert for that exact event
+alertcondition(buyCond, title="BUY: green crossover +CISD", message="BUY: Green candle crossed above +CISD on {{ticker}} {{interval}} at {{close}}")
+
+// ============================================================================
 // === SESSIONS + KEY LEVELS (indicator-only) =================================
 // ============================================================================
-
 // Settings: Sessions
 // Session A
 show_sesa = input(true, '', inline = 'sesa', group = 'Session A')
 sesa_txt  = input('New York', '', inline = 'sesa', group = 'Session A')
 sesa_ses  = input.session('1300-2200', '', inline = 'sesa', group = 'Session A')
 sesa_css  = input.color(#ff5d00, '', inline = 'sesa', group = 'Session A')
-
 sesa_range     = input(true, 'Range', inline = 'sesa_overlays', group = 'Session A')
 sesa_maxmin    = input(false, 'Max/Min', inline = 'sesa_overlays', group = 'Session A')
-
 // Session B
 show_sesb = input(true, '', inline = 'sesb', group = 'Session B')
 sesb_txt  = input('London', '', inline = 'sesb', group = 'Session B')
 sesb_ses  = input.session('0700-1600', '', inline = 'sesb', group = 'Session B')
 sesb_css  = input.color(#2157f3, '', inline = 'sesb', group = 'Session B')
-
 sesb_range     = input(true, 'Range', inline = 'sesb_overlays', group = 'Session B')
 sesb_maxmin    = input(false, 'Max/Min', inline = 'sesb_overlays', group = 'Session B')
-
 // Session C
 show_sesc = input(true, '', inline = 'sesc', group = 'Session C')
 sesc_txt  = input('Tokyo', '', inline = 'sesc', group = 'Session C')
 sesc_ses  = input.session('0000-0900', '', inline = 'sesc', group = 'Session C')
 sesc_css  = input.color(#e91e63, '', inline = 'sesc', group = 'Session C')
-
 sesc_range     = input(true, 'Range', inline = 'sesc_overlays', group = 'Session C')
 sesc_maxmin    = input(false, 'Max/Min', inline = 'sesc_overlays', group = 'Session C')
-
 // Session D
 show_sesd = input(true, '', inline = 'sesd', group = 'Session D')
 sesd_txt  = input('Sydney', '', inline = 'sesd', group = 'Session D')
 sesd_ses  = input.session('2100-0600', '', inline = 'sesd', group = 'Session D')
 sesd_css  = input.color(#ffeb3b, '', inline = 'sesd', group = 'Session D')
-
 sesd_range     = input(true, 'Range', inline = 'sesd_overlays', group = 'Session D')
 sesd_maxmin    = input(false, 'Max/Min', inline = 'sesd_overlays', group = 'Session D')
 
@@ -269,7 +278,7 @@ pwh_color  = input.color(color.new(color.blue,  0), '', inline = 'pwh', group = 
 show_pwl   = input.bool(false, 'Prev Week Low', inline = 'pwl', group = 'Previous Periods')
 pwl_color  = input.color(color.new(color.orange,0), '', inline = 'pwl', group = 'Previous Periods')
 
-// Fair Value Gaps (FVG)
+// Fair Value Gaps (visuals only)
 show_fvg        = input.bool(true, 'Show FVGs', group = 'Fair Value Gaps')
 fvg_extend      = input.int(10, 'Extend FVGs', group = 'Fair Value Gaps')
 fvg_up_color    = input.color(#2962ff, 'Bullish color', group = 'Fair Value Gaps')
@@ -340,17 +349,14 @@ if show_sesa and sesa_range
     [maxA, minA] = get_range(is_sesa, sesa_txt, sesa_css)
     max_sesa := maxA
     min_sesa := minA
-
 if show_sesb and sesb_range
     [maxB, minB] = get_range(is_sesb, sesb_txt, sesb_css)
     max_sesb := maxB
     min_sesb := minB
-
 if show_sesc and sesc_range
     [maxC, minC] = get_range(is_sesc, sesc_txt, sesc_css)
     max_sesc := maxC
     min_sesc := minC
-
 if show_sesd and sesd_range
     [maxD, minD] = get_range(is_sesd, sesd_txt, sesd_css)
     max_sesd := maxD
@@ -365,22 +371,33 @@ plot(sesc_maxmin ? min_sesc : na, 'Session C Minimum', sesc_css, 1, plot.style_l
 plot(sesd_maxmin ? max_sesd : na, 'Session D Maximum', sesd_css, 1, plot.style_linebr)
 plot(sesd_maxmin ? min_sesd : na, 'Session D Minimum', sesd_css, 1, plot.style_linebr)
 
+
+// Visual cross markers for session highs and lows (optional)
+plotshape(show_sesa and sesa_maxmin and ta.crossover(close, max_sesa),  title='Cross Session A High', location=location.abovebar, color=sesa_css, style=shape.cross, size=size.tiny)
+plotshape(show_sesa and sesa_maxmin and ta.crossunder(close, min_sesa), title='Cross Session A Low',  location=location.belowbar, color=sesa_css, style=shape.cross, size=size.tiny)
+plotshape(show_sesb and sesb_maxmin and ta.crossover(close, max_sesb),  title='Cross Session B High', location=location.abovebar, color=sesb_css, style=shape.cross, size=size.tiny)
+plotshape(show_sesb and sesb_maxmin and ta.crossunder(close, min_sesb), title='Cross Session B Low',  location=location.belowbar, color=sesb_css, style=shape.cross, size=size.tiny)
+plotshape(show_sesc and sesc_maxmin and ta.crossover(close, max_sesc),  title='Cross Session C High', location=location.abovebar, color=sesc_css, style=shape.cross, size=size.tiny)
+plotshape(show_sesc and sesc_maxmin and ta.crossunder(close, min_sesc), title='Cross Session C Low',  location=location.belowbar, color=sesc_css, style=shape.cross, size=size.tiny)
+plotshape(show_sesd and sesd_maxmin and ta.crossover(close, max_sesd),  title='Cross Session D High', location=location.abovebar, color=sesd_css, style=shape.cross, size=size.tiny)
+plotshape(show_sesd and sesd_maxmin and ta.crossunder(close, min_sesd), title='Cross Session D Low',  location=location.belowbar, color=sesd_css, style=shape.cross, size=size.tiny)
+
 //-----------------------------------------------------------------------------
+
 // Previous period key levels
+
 //-----------------------------------------------------------------------------
+
 prev_day_high  = request.security(syminfo.tickerid, 'D', high[1], lookahead = barmerge.lookahead_on)
 prev_day_low   = request.security(syminfo.tickerid, 'D', low[1],  lookahead = barmerge.lookahead_on)
 prev_week_high = request.security(syminfo.tickerid, 'W', high[1], lookahead = barmerge.lookahead_on)
 prev_week_low  = request.security(syminfo.tickerid, 'W', low[1],  lookahead = barmerge.lookahead_on)
-
 is_new_day  = ta.change(time('D'))
 is_new_week = ta.change(time('W'))
-
 var line pdh_line = na
 var line pdl_line = na
 var line pwh_line = na
 var line pwl_line = na
-
 if is_new_day
     line.delete(pdh_line)
     line.delete(pdl_line)
@@ -404,7 +421,6 @@ if show_pdl and not na(pdl_line)
 else
     line.delete(pdl_line)
     pdl_line := na
-
 if is_new_week
     line.delete(pwh_line)
     line.delete(pwl_line)
@@ -433,19 +449,17 @@ else
 plotshape(show_pdh and ta.crossover(close, prev_day_high),  title='Cross Prev Day High',  location=location.abovebar, color=pdh_color, style=shape.cross, size=size.tiny)
 plotshape(show_pdl and ta.crossunder(close, prev_day_low), title='Cross Prev Day Low',   location=location.belowbar,  color=pdl_color, style=shape.cross, size=size.tiny)
 plotshape(show_pwh and ta.crossover(close, prev_week_high), title='Cross Prev Week High', location=location.abovebar, color=pwh_color, style=shape.cross, size=size.tiny)
-plotshape(show_pwl and ta.crossunder(close, prev_week_low),  title='Cross Prev Week Low', location=location.belowbar, color=pwl_color, style=shape.cross, size=size.tiny)
+plotshape(show_pwl and ta.crossunder(close, prev_week_low),  title='Cross Prev Week Low', location=location.belowbar, color=pwl_color, style=shape.cross, size=size.tiny) 
 
 // ============================================================================
 // === Fair Value Gaps (visuals only) =========================================
 // ============================================================================
 bfvg = low > high[2] and (not fvg_consistency or (close > open and close[1] > open[1] and close[2] > open[2]))
 sfvg = high < low[2] and (not fvg_consistency or (close < open and close[1] < open[1] and close[2] < open[2]))
-
 if show_fvg and bfvg
     box.new(n - 2, low, n + fvg_extend, high[2],
       border_color = color.new(color.gray, 100),
       bgcolor = color.new(fvg_up_color, 85))
-
 if show_fvg and sfvg
     box.new(n - 2, high, n + fvg_extend, low[2],
       border_color = color.new(color.gray, 100),
