@@ -188,8 +188,8 @@ latestPlusCISD  = getLatestCisdBeY() // +CISD label text lives on cisdLevelsBe i
 latestMinusCISD = getLatestCisdBuY() // -CISD label text lives on cisdLevelsBu in original code
 
 // --- Mitigation & reuse flags (for ENTRIES only) ----------------------------
-var bool plusReusable  = false  // for +CISD line: becomes reusable after a close ABOVE it
-var bool minusReusable = false  // for -CISD line: becomes reusable after a close BELOW it
+var bool plusReusable  = false
+var bool minusReusable = false
 
 newPlusMitigated  = allow_reuse and not na(latestPlusCISD)  and close > latestPlusCISD  and (na(close[1]) or close[1] <= latestPlusCISD)
 newMinusMitigated = allow_reuse and not na(latestMinusCISD) and close < latestMinusCISD and (na(close[1]) or close[1] >= latestMinusCISD)
@@ -263,6 +263,10 @@ use_exchange = input(false, 'Use Exchange Timezone', group = 'Timezone')
 bg_transp   = input.float(90, 'Range Area Transparency', group = 'Ranges Settings')
 show_outline= input(true, 'Range Outline', group = 'Ranges Settings')
 show_txt    = input(true, 'Range Label', group = 'Ranges Settings')
+
+// >>> NEW: Boundary cross ignore <<<
+ignore_boundary_crosses = input.bool(true, "Ignore boundary crosses", group = 'Ranges Settings', tooltip="If ON, crosses are ignored on session start/end and for a few bars after.")
+boundary_ignore_bars    = input.int(1, "Boundary ignore bars", minval=0, group='Ranges Settings', tooltip="Bars to ignore after any session start or end.")
 
 // Previous Period Levels
 show_pdh   = input.bool(true,  'Prev Day High', inline = 'pdh', group = 'Previous Periods')
@@ -340,6 +344,12 @@ sesb_start = in_sesb and not in_sesb[1]
 sesc_start = in_sesc and not in_sesc[1]
 sesd_start = in_sesd and not in_sesd[1]
 
+// >>> NEW: session-end flags <<<
+sesa_end = not in_sesa and in_sesa[1]
+sesb_end = not in_sesb and in_sesb[1]
+sesc_end = not in_sesc and in_sesc[1]
+sesd_end = not in_sesd and in_sesd[1]
+
 // --- Per-session trade counters (reset at each session start)
 var int sesa_trades = 0
 var int sesb_trades = 0
@@ -403,15 +413,29 @@ plot(sesc_maxmin ? min_sesc : na, 'Session C Minimum', sesc_css, 1, plot.style_l
 plot(sesd_maxmin ? max_sesd : na, 'Session D Maximum', sesd_css, 1, plot.style_linebr)
 plot(sesd_maxmin ? min_sesd : na, 'Session D Minimum', sesd_css, 1, plot.style_linebr)
 
-// === Session cross booleans (NOW generic: ta.cross) ===
-sa_high_cross = show_sesa and sesa_maxmin and ta.cross(close, max_sesa)
-sa_low_cross  = show_sesa and sesa_maxmin and ta.cross(close, min_sesa)
-sb_high_cross = show_sesb and sesb_maxmin and ta.cross(close, max_sesb)
-sb_low_cross  = show_sesb and sesb_maxmin and ta.cross(close, min_sesb)
-sc_high_cross = show_sesc and sesc_maxmin and ta.cross(close, max_sesc)
-sc_low_cross  = show_sesc and sesc_maxmin and ta.cross(close, min_sesc)
-sd_high_cross = show_sesd and sesd_maxmin and ta.cross(close, max_sesd)
-sd_low_cross  = show_sesd and sesd_maxmin and ta.cross(close, min_sesd)
+// >>> NEW: boundary cool-down counters <<<
+var int cdA = 0, cdB = 0, cdC = 0, cdD = 0
+bumpCD(cond, cd) =>
+    ignore_boundary_crosses ? (cond ? boundary_ignore_bars : math.max(cd - 1, 0)) : 0
+
+cdA := bumpCD(sesa_start or sesa_end, cdA)
+cdB := bumpCD(sesb_start or sesb_end, cdB)
+cdC := bumpCD(sesc_start or sesc_end, cdC)
+cdD := bumpCD(sesd_start or sesd_end, cdD)
+
+// >>> NEW: level-stability helper (prevents NA->value “phantom” crosses) <<<
+stable(level) =>
+    not na(level) and not na(level[1]) and level == level[1]
+
+// === Session cross booleans (guarded) ===
+sa_high_cross = show_sesa and sesa_maxmin and cdA == 0 and stable(max_sesa) and ta.cross(close, max_sesa)
+sa_low_cross  = show_sesa and sesa_maxmin and cdA == 0 and stable(min_sesa) and ta.cross(close, min_sesa)
+sb_high_cross = show_sesb and sesb_maxmin and cdB == 0 and stable(max_sesb) and ta.cross(close, max_sesb)
+sb_low_cross  = show_sesb and sesb_maxmin and cdB == 0 and stable(min_sesb) and ta.cross(close, min_sesb)
+sc_high_cross = show_sesc and sesc_maxmin and cdC == 0 and stable(max_sesc) and ta.cross(close, max_sesc)
+sc_low_cross  = show_sesc and sesc_maxmin and cdC == 0 and stable(min_sesc) and ta.cross(close, min_sesc)
+sd_high_cross = show_sesd and sesd_maxmin and cdD == 0 and stable(max_sesd) and ta.cross(close, max_sesd)
+sd_low_cross  = show_sesd and sesd_maxmin and cdD == 0 and stable(min_sesd) and ta.cross(close, min_sesd)
 
 // Visual cross markers for session highs and lows (optional)
 plotshape(sa_high_cross,  title='Cross Session A High', location=location.abovebar, color=sesa_css, style=shape.cross, size=size.tiny)
@@ -484,10 +508,12 @@ else
     pwl_line := na
 
 // === Previous period cross booleans (NOW generic: ta.cross) ===
-pdh_cross_up = show_pdh and ta.cross(close, prev_day_high)
-pdl_cross_dn = show_pdl and ta.cross(close, prev_day_low)
-pwh_cross_up = show_pwh and ta.cross(close, prev_week_high)
-pwl_cross_dn = show_pwl and ta.cross(close, prev_week_low)
+// (also require stability to avoid NA->value first-bar artifacts)
+stable_d(v) => not na(v) and not na(v[1]) and v == v[1]
+pdh_cross_up = show_pdh and stable_d(prev_day_high)  and ta.cross(close, prev_day_high)
+pdl_cross_dn = show_pdl and stable_d(prev_day_low)   and ta.cross(close, prev_day_low)
+pwh_cross_up = show_pwh and stable_d(prev_week_high) and ta.cross(close, prev_week_high)
+pwl_cross_dn = show_pwl and stable_d(prev_week_low)  and ta.cross(close, prev_week_low)
 
 // Visual cross markers (optional)
 plotshape(pdh_cross_up,  title='Cross Prev Day High',  location=location.abovebar, color=pdh_color, style=shape.cross, size=size.tiny)
@@ -503,8 +529,8 @@ anyKeyLevelCross = sa_high_cross or sa_low_cross or sb_high_cross or sb_low_cros
 newCross = anyKeyLevelCross and not anyKeyLevelCross[1]
 
 // === REARM AFTER STOP-OUT state ===
-var bool requireCrossToRearm = false   // becomes true right after a stop-out; next trade requires a fresh cross
-var float lastStopAt = na             // remembers the last active stop while in position
+var bool requireCrossToRearm = false
+var float lastStopAt = na
 
 // Only arm when a cross happens AND a rearm is required
 if newCross and requireCrossToRearm
@@ -584,7 +610,6 @@ if sellCond and canEnterNow
     entryPrice := close
     lineBelowEntry := false
     strategy.entry("Short", strategy.short)
-    // Ensure one-per-level semantics even if labels hidden
     if not show_signal_labels
         minusSellLabelFired := true
     if in_sesa
@@ -595,7 +620,6 @@ if sellCond and canEnterNow
         sesc_trades += 1
     if in_sesd
         sesd_trades += 1
-    // consume the rearm token if it was required
     armedForTrade := false
 
 buyCond  = buyLabelLogic
@@ -604,7 +628,6 @@ if buyCond and canEnterNow
     entryPrice := close
     lineAboveEntry := false
     strategy.entry("Long", strategy.long)
-    // Ensure one-per-level semantics even if labels hidden
     if not show_signal_labels
         plusBuyLabelFired := true
     if in_sesa
@@ -615,7 +638,6 @@ if buyCond and canEnterNow
         sesc_trades += 1
     if in_sesd
         sesd_trades += 1
-    // consume the rearm token if it was required
     armedForTrade := false
 
 alertcondition(sellCond, title="SELL: CISD label-triggered", message="SELL: CISD signal on {{ticker}} {{interval}} at {{close}}")
@@ -686,11 +708,9 @@ if strategy.position_size > 0
 
 // ============================================================================
 // === REARM AFTER STOP-OUT: detect stop-based exits and require a new cross ===
-// Track last stop while in position
 if strategy.position_size != 0 and not na(stopPrice)
     lastStopAt := stopPrice
 
-// Detect transition to flat
 justFlat = strategy.position_size == 0 and strategy.position_size[1] != 0
 wasLong  = strategy.position_size[1] > 0
 wasShort = strategy.position_size[1] < 0
@@ -700,11 +720,8 @@ stoppedOutShort = justFlat and wasShort and not na(lastStopAt[1]) and high >= la
 stoppedOut = stoppedOutLong or stoppedOutShort
 
 if stoppedOut
-    // Require a fresh key-level cross before another entry
     requireCrossToRearm := true
     armedForTrade := false
     lastStopAt := na
 else if justFlat
-    // non-stop exit (e.g., line cross/TP): do not force rearm
     lastStopAt := na
-// ============================================================================
