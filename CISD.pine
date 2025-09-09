@@ -35,6 +35,8 @@ type CisdRec
     line level
     label txt
     bool completed
+    bool hadBuy     // <— NEW: ensures a +CISD line issues BUY only once
+    bool hadSell    // <— NEW: ensures a -CISD line issues SELL only once
 
 // --- Vars
 var line   lastTopLine   = na
@@ -100,13 +102,13 @@ if low < currentStructure.bottomPrice
         isBearishPullback := false
         cisdBearLine = line.new(bullishBreakIndex, potentialTopPrice, bar_index + lookAheadBars, potentialTopPrice, color=bullishBreakColor, width=lineWidthCisd, style = lineStyleCisd)
         cisdBearLbl  = label.new(bar_index + lookAheadBars, potentialTopPrice, bullStr, color=color.new(color.white,100), textcolor=bullishBreakColor, style=label.style_label_left, size = size.small)
-        array.push(cisdLevelsBe, CisdRec.new(cisdBearLine, cisdBearLbl, false))
+        array.push(cisdLevelsBe, CisdRec.new(cisdBearLine, cisdBearLbl, false, false, false))
     else if close[1] > open[1] and close < open
         currentStructure.topPrice := high[1]
         isBearishPullback := false
         cisdBearLine = line.new(bullishBreakIndex, potentialTopPrice, bar_index + lookAheadBars, potentialTopPrice, color=bullishBreakColor, width=lineWidthCisd, style = lineStyleCisd)
         cisdBearLbl  = label.new(bar_index + lookAheadBars, potentialTopPrice, bullStr, color=color.new(color.white,100), textcolor=bullishBreakColor, style=label.style_label_left, size = size.small)
-        array.push(cisdLevelsBe, CisdRec.new(cisdBearLine, cisdBearLbl, false))
+        array.push(cisdLevelsBe, CisdRec.new(cisdBearLine, cisdBearLbl, false, false, false))
 
 // Structure Updates - Bullish Break
 if high > currentStructure.topPrice
@@ -118,13 +120,13 @@ if high > currentStructure.topPrice
         isBullishPullback := false
         cisdBullLine = line.new(bearishBreakIndex, potentialBottomPrice, bar_index + lookAheadBars, potentialBottomPrice, color=bearishBreakColor, width=lineWidthCisd, style = lineStyleCisd)
         cisdBullLbl  = label.new(bar_index + lookAheadBars, potentialBottomPrice, bearStr, color=color.new(color.white,100), textcolor=bearishBreakColor, style=label.style_label_left, size = size.small)
-        array.push(cisdLevelsBu, CisdRec.new(cisdBullLine, cisdBullLbl, false))
+        array.push(cisdLevelsBu, CisdRec.new(cisdBullLine, cisdBullLbl, false, false, false))
     else if close[1] < open[1] and close > open
         currentStructure.bottomPrice := low[1]
         isBullishPullback := false
         cisdBullLine = line.new(bearishBreakIndex, potentialBottomPrice, bar_index + lookAheadBars, potentialBottomPrice, color=bearishBreakColor, width=lineWidthCisd, style = lineStyleCisd)
         cisdBullLbl  = label.new(bar_index + lookAheadBars, potentialBottomPrice, bearStr, color=color.new(color.white,100), textcolor=bearishBreakColor, style=label.style_label_left, size = size.small)
-        array.push(cisdLevelsBu, CisdRec.new(cisdBullLine, cisdBullLbl, false))
+        array.push(cisdLevelsBu, CisdRec.new(cisdBullLine, cisdBullLbl, false, false, false))
 
 // Only keep latest CISD level (if keepLevels=false)
 if array.size(cisdLevelsBu) > 1 and not keepLevels
@@ -150,7 +152,7 @@ if array.size(cisdLevelsBu) >= 1
         // spawn opposite level
         cisdBearLine2 = line.new(bullishBreakIndex, potentialTopPrice, bar_index + lookAheadBars, potentialTopPrice, color=bullishBreakColor, width=lineWidthCisd, style = lineStyleCisd)
         cisdBearLbl2  = label.new(bar_index + lookAheadBars, potentialTopPrice, bullStr, color=color.new(color.white,100), textcolor=bullishBreakColor, style=label.style_label_left, size = size.small)
-        array.push(cisdLevelsBe, CisdRec.new(cisdBearLine2, cisdBearLbl2, false))
+        array.push(cisdLevelsBe, CisdRec.new(cisdBearLine2, cisdBearLbl2, false, false, false))
         cisdCurrentState := false
         bearFormed := true
 
@@ -166,7 +168,7 @@ if array.size(cisdLevelsBe) >= 1 and not keepLevels
         // spawn opposite level
         cisdBullLine2 = line.new(bearishBreakIndex, potentialBottomPrice, bar_index + lookAheadBars, potentialBottomPrice, color=bearishBreakColor, width=lineWidthCisd, style = lineStyleCisd)
         cisdBullLbl2  = label.new(bar_index + lookAheadBars, potentialBottomPrice, bearStr, color=color.new(color.white,100), textcolor=bearishBreakColor, style=label.style_label_left, size = size.small)
-        array.push(cisdLevelsBu, CisdRec.new(cisdBullLine2, cisdBullLbl2, false))
+        array.push(cisdLevelsBu, CisdRec.new(cisdBullLine2, cisdBullLbl2, false, false, false))
         cisdCurrentState := true
         bullFormed := true
 
@@ -186,45 +188,59 @@ getLatestCisdBuY() =>
 latestPlusCISD  = getLatestCisdBeY() // "+CISD" (from bearish pullback)
 latestMinusCISD = getLatestCisdBuY() // "-CISD" (from bullish pullback)
 
-// Alertconditions: cross ABOVE +CISD/-CISD
-ac_plusCisd  = bullishAlerts and not na(latestPlusCISD)  and ta.crossover(close, latestPlusCISD)
-ac_minusCisd = bearishAlerts and not na(latestMinusCISD) and ta.crossover(close, latestMinusCISD)
-alertcondition(ac_plusCisd,  title="+CISD Cross Up",  message="+CISD crossed up")
-alertcondition(ac_minusCisd, title="-CISD Cross Up",  message="-CISD crossed up")
-
-// Optional: Alerts when a new CISD is formed
-alertcondition(bullFormed, title="Bullish CISD Formed", message="Bullish CISD formed")
-alertcondition(bearFormed, title="Bearish CISD Formed", message="Bearish CISD formed")
-
 // ============================================================================
-// === SELL label: only on the crossunder bar (red close below LAST -CISD) ====
+// === SELL label: only once per latest -CISD line ============================
 // ============================================================================
 bearishCisdLevel = latestMinusCISD
-// Fires exactly once: the bar where close crosses from above to below the -CISD, and the candle is red
-sellCond = not na(bearishCisdLevel) and ta.crossunder(close, bearishCisdLevel) and (close < open)
+sellCondBase = not na(bearishCisdLevel) and ta.crossunder(close, bearishCisdLevel) and (close < open)
+
+// Gate by per-line flag so a -CISD line can only label SELL once
+var bool sellCond = false
+sellCond := false
+if sellCondBase and array.size(cisdLevelsBu) > 0
+    idxBu = array.size(cisdLevelsBu) - 1
+    recBu = array.get(cisdLevelsBu, idxBu)
+    if not recBu.hadSell
+        sellCond := true
+        recBu.hadSell := true
+        array.set(cisdLevelsBu, idxBu, recBu)
+
 if sellCond
     label.new(bar_index, high, "SELL",
          style     = label.style_label_down,
          color     = color.red,
          textcolor = color.white,
          size      = size.tiny)
-// Optional alert for that exact event
 alertcondition(sellCond, title="SELL: red crossunder -CISD", message="SELL: Red candle crossed under -CISD on {{ticker}} {{interval}} at {{close}}")
 
 // ============================================================================
-// === BUY label: only on the crossover bar (green close above LAST +CISD) ====
+// === BUY label: only once per latest +CISD line =============================
 // ============================================================================
 bullishCisdLevel = latestPlusCISD
-// Fires exactly once: the bar where close crosses from below to above the +CISD, and the candle is green
-buyCond = not na(bullishCisdLevel) and ta.crossover(close, bullishCisdLevel) and (close > open)
+buyCondBase = not na(bullishCisdLevel) and ta.crossover(close, bullishCisdLevel) and (close > open)
+
+// Gate by per-line flag so a +CISD line can only label BUY once
+var bool buyCond = false
+buyCond := false
+if buyCondBase and array.size(cisdLevelsBe) > 0
+    idxBe = array.size(cisdLevelsBe) - 1
+    recBe = array.get(cisdLevelsBe, idxBe)
+    if not recBe.hadBuy
+        buyCond := true
+        recBe.hadBuy := true
+        array.set(cisdLevelsBe, idxBe, recBe)
+
 if buyCond
     label.new(bar_index, low, "BUY",
          style     = label.style_label_up,
          color     = color.new(color.green, 0),
          textcolor = color.white,
          size      = size.tiny)
-// Optional alert for that exact event
 alertcondition(buyCond, title="BUY: green crossover +CISD", message="BUY: Green candle crossed above +CISD on {{ticker}} {{interval}} at {{close}}")
+
+// Optional: Alerts when a new CISD is formed
+alertcondition(bullFormed, title="Bullish CISD Formed", message="Bullish CISD formed")
+alertcondition(bearFormed, title="Bearish CISD Formed", message="Bearish CISD formed")
 
 // ============================================================================
 // === SESSIONS + KEY LEVELS (indicator-only) =================================
@@ -465,7 +481,7 @@ if show_fvg and sfvg
       border_color = color.new(color.gray, 100),
       bgcolor = color.new(fvg_down_color, 85))
 
-    // ============================================================================
+// ============================================================================
 // === Price Action Management Tool (Bullish + Bearish) =======================
 // ============================================================================
 
