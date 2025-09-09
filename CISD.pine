@@ -1,5 +1,5 @@
 //@version=5
-indicator("Sessions + Key Levels + CISD ", "Sess/Key/CISD/FVG", overlay = true, max_bars_back = 500, max_lines_count = 500, max_boxes_count = 500, max_labels_count = 500)
+strategy("Sessions + Key Levels + CISD ", "Sess/Key/CISD/FVG", overlay = true, max_bars_back = 500, max_lines_count = 500, max_boxes_count = 500, max_labels_count = 500)
 
 // ============================================================================
 // === CISD MODULE (integrated & v5-compatible / indicator-only) ==============
@@ -15,6 +15,15 @@ lineWidthCisd   = input.int(1, "Line Width", minval=1, maxval=5, group=groupCISD
 lookAheadBars   = input.int(5, "Line Extension Bars", minval=1, maxval = 5, group=groupCISD)
 styleOption     = input.string("Solid (─)", title="Line Style", options=["Solid (─)", "Dotted (┈)", "Dashed (╌)"], group=groupCISD)
 keepLevels      = input.bool(false, "Keep old CISD levels", group=groupCISD)
+allow_reuse     = input.bool(true, "Reuse CISD after mitigation (for entries)", group=groupCISD, tooltip="After a candle closes above +CISD or below -CISD, allow future entry signals in BOTH directions around that line. (Labels remain directional, one per line.)")
+
+// === One-trade-per-cross state ===
+var bool armedForTrade = false
+var int  crossCycle    = 0
+
+// === Signals (labels on/off) ===
+groupSignals = "Signals"
+show_signal_labels = input.bool(true, "Show BUY/SELL labels", group=groupSignals, tooltip="If ON, places labels on CISD signals (limited to one BUY per +CISD and one SELL per -CISD).")
 
 // CISD table
 groupCISDTable  = "CISD Table"
@@ -36,15 +45,13 @@ type CisdRec
     line level
     label txt
     bool completed
-    bool hadBuy
-    bool hadSell
 
 // --- Vars
 var line   lastTopLine   = na
 var line   lastBottomLine= na
 var MarketStructure currentStructure = MarketStructure.new(0.0, 0.0, false)
-var CisdRec[] cisdLevelsBu = array.new<CisdRec>()   // holds -CISD lines built after bullish breaks
-var CisdRec[] cisdLevelsBe = array.new<CisdRec>()   // holds +CISD lines built after bearish breaks
+var CisdRec[] cisdLevelsBu = array.new<CisdRec>()
+var CisdRec[] cisdLevelsBe = array.new<CisdRec>()
 var bool  isBullishPullback    = false
 var bool  isBearishPullback    = false
 var float potentialTopPrice    = na
@@ -103,13 +110,13 @@ if low < currentStructure.bottomPrice
         isBearishPullback := false
         cisdBearLine = line.new(bullishBreakIndex, potentialTopPrice, bar_index + lookAheadBars, potentialTopPrice, color=bullishBreakColor, width=lineWidthCisd, style = lineStyleCisd)
         cisdBearLbl  = label.new(bar_index + lookAheadBars, potentialTopPrice, bullStr, color=color.new(color.white,100), textcolor=bullishBreakColor, style=label.style_label_left, size = size.small)
-        array.push(cisdLevelsBe, CisdRec.new(cisdBearLine, cisdBearLbl, false, false, false))
+        array.push(cisdLevelsBe, CisdRec.new(cisdBearLine, cisdBearLbl, false))
     else if close[1] > open[1] and close < open
         currentStructure.topPrice := high[1]
         isBearishPullback := false
         cisdBearLine = line.new(bullishBreakIndex, potentialTopPrice, bar_index + lookAheadBars, potentialTopPrice, color=bullishBreakColor, width=lineWidthCisd, style = lineStyleCisd)
         cisdBearLbl  = label.new(bar_index + lookAheadBars, potentialTopPrice, bullStr, color=color.new(color.white,100), textcolor=bullishBreakColor, style=label.style_label_left, size = size.small)
-        array.push(cisdLevelsBe, CisdRec.new(cisdBearLine, cisdBearLbl, false, false, false))
+        array.push(cisdLevelsBe, CisdRec.new(cisdBearLine, cisdBearLbl, false))
 
 // Structure Updates - Bullish Break
 if high > currentStructure.topPrice
@@ -121,13 +128,13 @@ if high > currentStructure.topPrice
         isBullishPullback := false
         cisdBullLine = line.new(bearishBreakIndex, potentialBottomPrice, bar_index + lookAheadBars, potentialBottomPrice, color=bearishBreakColor, width=lineWidthCisd, style = lineStyleCisd)
         cisdBullLbl  = label.new(bar_index + lookAheadBars, potentialBottomPrice, bearStr, color=color.new(color.white,100), textcolor=bearishBreakColor, style=label.style_label_left, size = size.small)
-        array.push(cisdLevelsBu, CisdRec.new(cisdBullLine, cisdBullLbl, false, false, false))
+        array.push(cisdLevelsBu, CisdRec.new(cisdBullLine, cisdBullLbl, false))
     else if close[1] < open[1] and close > open
         currentStructure.bottomPrice := low[1]
         isBullishPullback := false
         cisdBullLine = line.new(bearishBreakIndex, potentialBottomPrice, bar_index + lookAheadBars, potentialBottomPrice, color=bearishBreakColor, width=lineWidthCisd, style = lineStyleCisd)
         cisdBullLbl  = label.new(bar_index + lookAheadBars, potentialBottomPrice, bearStr, color=color.new(color.white,100), textcolor=bearishBreakColor, style=label.style_label_left, size = size.small)
-        array.push(cisdLevelsBu, CisdRec.new(cisdBullLine, cisdBullLbl, false, false, false))
+        array.push(cisdLevelsBu, CisdRec.new(cisdBullLine, cisdBullLbl, false))
 
 // Only keep latest CISD level (if keepLevels=false)
 if array.size(cisdLevelsBu) > 1 and not keepLevels
@@ -139,7 +146,7 @@ if array.size(cisdLevelsBe) > 1 and not keepLevels
     line.delete(latestBe.level)
     label.delete(latestBe.txt)
 
-// Drive/complete +CISD (bearish pullback) line
+// Drive/complete +CISD
 var bool bullFormed = false
 var bool bearFormed = false
 if array.size(cisdLevelsBu) >= 1
@@ -152,11 +159,11 @@ if array.size(cisdLevelsBu) >= 1
         latestRecBu.completed := true
         cisdBearLine2 = line.new(bullishBreakIndex, potentialTopPrice, bar_index + lookAheadBars, potentialTopPrice, color=bullishBreakColor, width=lineWidthCisd, style = lineStyleCisd)
         cisdBearLbl2  = label.new(bar_index + lookAheadBars, potentialTopPrice, bullStr, color=color.new(color.white,100), textcolor=bullishBreakColor, style=label.style_label_left, size = size.small)
-        array.push(cisdLevelsBe, CisdRec.new(cisdBearLine2, cisdBearLbl2, false, false, false))
+        array.push(cisdLevelsBe, CisdRec.new(cisdBearLine2, cisdBearLbl2, false))
         cisdCurrentState := false
         bearFormed := true
 
-// Drive/complete -CISD (bullish pullback) line
+// Drive/complete -CISD
 if array.size(cisdLevelsBe) >= 1 and not keepLevels
     latestRecBe = array.get(cisdLevelsBe,0)
     latestYBe   = line.get_y2(latestRecBe.level)
@@ -167,95 +174,84 @@ if array.size(cisdLevelsBe) >= 1 and not keepLevels
         latestRecBe.completed := true
         cisdBullLine2 = line.new(bearishBreakIndex, potentialBottomPrice, bar_index + lookAheadBars, potentialBottomPrice, color=bearishBreakColor, width=lineWidthCisd, style = lineStyleCisd)
         cisdBullLbl2  = label.new(bar_index + lookAheadBars, potentialBottomPrice, bearStr, color=color.new(color.white,100), textcolor=bearishBreakColor, style=label.style_label_left, size = size.small)
-        array.push(cisdLevelsBu, CisdRec.new(cisdBullLine2, cisdBullLbl2, false, false, false))
+        array.push(cisdLevelsBu, CisdRec.new(cisdBullLine2, cisdBullLbl2, false))
         cisdCurrentState := true
         bullFormed := true
 
-// CISD Table
-if showTable and barstate.islast
-    var tbl = table.new(gettablePos(tablePosition), 4, 4, bgcolor=chart.bg_color, border_color=chart.fg_color, frame_color = chart.fg_color, frame_width = 1, border_width = 1)
-    table.cell(tbl, 0,0, syminfo.ticker+", "+timeframe.period+" neo|", text_size = size.tiny, text_color = chart.fg_color)
-    table.cell(tbl, 0, 1, "Current State", text_color=chart.bg_color, text_size=size.small, bgcolor = chart.fg_color)
-    table.cell(tbl, 0, 2, cisdCurrentState ? "Bullish" : "Bearish",  text_color=chart.fg_color, text_size=size.small)
-
-// --- Expose latest CISD levels
+// --- Expose latest CISD levels (by y-value of the most-recent line)
 getLatestCisdBeY() =>
     array.size(cisdLevelsBe) > 0 ? line.get_y2(array.get(cisdLevelsBe, array.size(cisdLevelsBe) - 1).level) : na
 getLatestCisdBuY() =>
     array.size(cisdLevelsBu) > 0 ? line.get_y2(array.get(cisdLevelsBu, array.size(cisdLevelsBu) - 1).level) : na
 
-latestPlusCISD  = getLatestCisdBeY() // "+CISD" (from bearish pullback)
-latestMinusCISD = getLatestCisdBuY() // "-CISD" (from bullish pullback)
+latestPlusCISD  = getLatestCisdBeY() // +CISD label text lives on cisdLevelsBe in original code
+latestMinusCISD = getLatestCisdBuY() // -CISD label text lives on cisdLevelsBu in original code
 
-// ============================================================================
-// === SELL / BUY labels (once per CISD line) =================================
-// ============================================================================
-bearishCisdLevel = latestMinusCISD
-sellCondBase = not na(bearishCisdLevel) and ta.crossunder(close, bearishCisdLevel) and (close < open)
+// --- Mitigation & reuse flags (for ENTRIES only) ----------------------------
+var bool plusReusable  = false  // for +CISD line: becomes reusable after a close ABOVE it
+var bool minusReusable = false  // for -CISD line: becomes reusable after a close BELOW it
 
-var bool sellCond = false
-sellCond := false
-if sellCondBase and array.size(cisdLevelsBu) > 0
-    idxBu = array.size(cisdLevelsBu) - 1
-    recBu = array.get(cisdLevelsBu, idxBu)
-    if not recBu.hadSell
-        sellCond := true
-        recBu.hadSell := true
-        array.set(cisdLevelsBu, idxBu, recBu)
+newPlusMitigated  = allow_reuse and not na(latestPlusCISD)  and close > latestPlusCISD  and (na(close[1]) or close[1] <= latestPlusCISD)
+newMinusMitigated = allow_reuse and not na(latestMinusCISD) and close < latestMinusCISD and (na(close[1]) or close[1] >= latestMinusCISD)
+if newPlusMitigated
+    plusReusable := true
+if newMinusMitigated
+    minusReusable := true
 
-if sellCond
-    label.new(bar_index, high, "SELL", style=label.style_label_down, color=color.red, textcolor=color.white, size=size.tiny)
-alertcondition(sellCond, title="SELL: red crossunder -CISD", message="SELL: Red candle crossed under -CISD on {{ticker}} {{interval}} at {{close}}")
+if allow_reuse
+    if not na(latestPlusCISD) and not na(latestPlusCISD[1]) and latestPlusCISD != latestPlusCISD[1]
+        plusReusable := false
+    if not na(latestMinusCISD) and not na(latestMinusCISD[1]) and latestMinusCISD != latestMinusCISD[1]
+        minusReusable := false
+    if bullFormed or bearFormed
+        plusReusable := false
+        minusReusable := false
 
-bullishCisdLevel = latestPlusCISD
-buyCondBase = not na(bullishCisdLevel) and ta.crossover(close, bullishCisdLevel) and (close > open)
-
-var bool buyCond = false
-buyCond := false
-if buyCondBase and array.size(cisdLevelsBe) > 0
-    idxBe = array.size(cisdLevelsBe) - 1
-    recBe = array.get(cisdLevelsBe, idxBe)
-    if not recBe.hadBuy
-        buyCond := true
-        recBe.hadBuy := true
-        array.set(cisdLevelsBe, idxBe, recBe)
-
-if buyCond
-    label.new(bar_index, low, "BUY", style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white, size=size.tiny)
-alertcondition(buyCond, title="BUY: green crossover +CISD", message="BUY: Green candle crossed above +CISD on {{ticker}} {{interval}} at {{close}}")
-
+// Base alerts (unchanged)
+ac_plusCisd  = bullishAlerts and not na(latestPlusCISD)  and ta.crossover(close, latestPlusCISD)
+ac_minusCisd = bearishAlerts and not na(latestMinusCISD) and ta.crossover(close, latestMinusCISD)
+alertcondition(ac_plusCisd,  title="+CISD Cross Up",  message="+CISD crossed up")
+alertcondition(ac_minusCisd, title="-CISD Cross Up",  message="-CISD crossed up")
 alertcondition(bullFormed, title="Bullish CISD Formed", message="Bullish CISD formed")
 alertcondition(bearFormed, title="Bearish CISD Formed", message="Bearish CISD formed")
 
 // ============================================================================
 // === SESSIONS + KEY LEVELS (indicator-only) =================================
 // ============================================================================
-// Session inputs
+// Session A
 show_sesa = input(true, '', inline = 'sesa', group = 'Session A')
 sesa_txt  = input('New York', '', inline = 'sesa', group = 'Session A')
-sesa_ses  = input.session('1300-2200', '', inline = 'sesa', group = 'Session A')
+sesa_ses  = input.session('1330-2200', '', inline = 'sesa', group = 'Session A')
 sesa_css  = input.color(#ff5d00, '', inline = 'sesa', group = 'Session A')
+sesa_max_trades = input.int(999, 'Max Trades', minval=0, inline='sesa_lmt', group='Session A')
+
 sesa_range     = input(true, 'Range', inline = 'sesa_overlays', group = 'Session A')
 sesa_maxmin    = input(false, 'Max/Min', inline = 'sesa_overlays', group = 'Session A')
-
+// Session B
 show_sesb = input(true, '', inline = 'sesb', group = 'Session B')
 sesb_txt  = input('London', '', inline = 'sesb', group = 'Session B')
-sesb_ses  = input.session('0700-1600', '', inline = 'sesb', group = 'Session B')
+sesb_ses  = input.session('0700-1300', '', inline = 'sesb', group = 'Session B')
 sesb_css  = input.color(#2157f3, '', inline = 'sesb', group = 'Session B')
+sesb_max_trades = input.int(999, 'Max Trades', minval=0, inline='sesb_lmt', group='Session B')
+
 sesb_range     = input(true, 'Range', inline = 'sesb_overlays', group = 'Session B')
 sesb_maxmin    = input(false, 'Max/Min', inline = 'sesb_overlays', group = 'Session B')
-
+// Session C
 show_sesc = input(true, '', inline = 'sesc', group = 'Session C')
 sesc_txt  = input('Tokyo', '', inline = 'sesc', group = 'Session C')
-sesc_ses  = input.session('0000-0900', '', inline = 'sesc', group = 'Session C')
+sesc_ses  = input.session('0000-0700', '', inline = 'sesc', group = 'Session C')
 sesc_css  = input.color(#e91e63, '', inline = 'sesc', group = 'Session C')
+sesc_max_trades = input.int(999, 'Max Trades', minval=0, inline='sesc_lmt', group='Session C')
+
 sesc_range     = input(true, 'Range', inline = 'sesc_overlays', group = 'Session C')
 sesc_maxmin    = input(false, 'Max/Min', inline = 'sesc_overlays', group = 'Session C')
-
+// Session D
 show_sesd = input(true, '', inline = 'sesd', group = 'Session D')
 sesd_txt  = input('Sydney', '', inline = 'sesd', group = 'Session D')
 sesd_ses  = input.session('2100-0600', '', inline = 'sesd', group = 'Session D')
 sesd_css  = input.color(#ffeb3b, '', inline = 'sesd', group = 'Session D')
+sesd_max_trades = input.int(999, 'Max Trades', minval=0, inline='sesd_lmt', group='Session D')
+
 sesd_range     = input(true, 'Range', inline = 'sesd_overlays', group = 'Session D')
 sesd_maxmin    = input(false, 'Max/Min', inline = 'sesd_overlays', group = 'Session D')
 
@@ -268,40 +264,22 @@ bg_transp   = input.float(90, 'Range Area Transparency', group = 'Ranges Setting
 show_outline= input(true, 'Range Outline', group = 'Ranges Settings')
 show_txt    = input(true, 'Range Label', group = 'Ranges Settings')
 
-// -------- Previous Period Levels (RESTORED INPUTS) --------------------------
+// Previous Period Levels
 show_pdh   = input.bool(true,  'Prev Day High', inline = 'pdh', group = 'Previous Periods')
 pdh_color  = input.color(color.new(color.green, 0), '', inline = 'pdh', group = 'Previous Periods')
-show_pdl   = input.bool(true,  'Prev Day Low',  inline = 'pdl', group = 'Previous Periods')
+show_pdl   = input.bool(true,  'Prev Day Low', inline = 'pdl', group = 'Previous Periods')
 pdl_color  = input.color(color.new(color.red,   0), '', inline = 'pdl', group = 'Previous Periods')
 show_pwh   = input.bool(false, 'Prev Week High', inline = 'pwh', group = 'Previous Periods')
 pwh_color  = input.color(color.new(color.blue,  0), '', inline = 'pwh', group = 'Previous Periods')
-show_pwl   = input.bool(false, 'Prev Week Low',  inline = 'pwl', group = 'Previous Periods')
+show_pwl   = input.bool(false, 'Prev Week Low', inline = 'pwl', group = 'Previous Periods')
 pwl_color  = input.color(color.new(color.orange,0), '', inline = 'pwl', group = 'Previous Periods')
 
-// -------- Fair Value Gaps (RESTORED INPUTS) ---------------------------------
-show_fvg        = input.bool(true,  'Show FVGs',           group = 'Fair Value Gaps')
-fvg_extend      = input.int(10,     'Extend FVGs',         group = 'Fair Value Gaps')
-fvg_up_color    = input.color(#2962ff, 'Bullish color',    group = 'Fair Value Gaps')
-fvg_down_color  = input.color(#e91e63, 'Bearish color',    group = 'Fair Value Gaps')
-fvg_consistency = input.bool(true,  'Consistency rule',    group = 'Fair Value Gaps')
-
-// ------- Cross Detection (wick-aware) ---------------------------------------
-groupCross   = "Cross Detection"
-use_wick     = input.bool(true, "Detect wick crosses (High/Low pierce)", group=groupCross, tooltip="If enabled: a bar that pierces a level with its wick will count as a cross.")
-mark_up      = input.bool(true,  "Show Up crosses", group=groupCross)
-mark_down    = input.bool(true,  "Show Down crosses", group=groupCross)
-
-// Wick-aware helpers
-crossOverWick(level) =>
-    not na(level) and open < level and high >= level
-crossUnderWick(level) =>
-    not na(level) and open > level and low  <= level
-crossOverAny(level) =>
-    not na(level) and (ta.crossover(close, level) or (use_wick and crossOverWick(level)))
-crossUnderAny(level) =>
-    not na(level) and (ta.crossunder(close, level) or (use_wick and crossUnderWick(level)))
-crossAny(level) =>
-    crossOverAny(level) or crossUnderAny(level)
+// Fair Value Gaps (visuals only)
+show_fvg        = input.bool(true, 'Show FVGs', group = 'Fair Value Gaps')
+fvg_extend      = input.int(10, 'Extend FVGs', group = 'Fair Value Gaps')
+fvg_up_color    = input.color(#2962ff, 'Bullish color', group = 'Fair Value Gaps')
+fvg_down_color  = input.color(#e91e63, 'Bearish color', group = 'Fair Value Gaps')
+fvg_consistency = input.bool(true, 'Consistency rule', group = 'Fair Value Gaps')
 
 //-----------------------------------------------------------------------------
 // Helpers & sessions
@@ -351,6 +329,42 @@ is_sesb = math.sign(nz(time(tf, sesb_ses, tz)))
 is_sesc = math.sign(nz(time(tf, sesc_ses, tz)))
 is_sesd = math.sign(nz(time(tf, sesd_ses, tz)))
 
+// --- Boolean in-session flags & session-start detection
+in_sesa = is_sesa != 0
+in_sesb = is_sesb != 0
+in_sesc = is_sesc != 0
+in_sesd = is_sesd != 0
+
+sesa_start = in_sesa and not in_sesa[1]
+sesb_start = in_sesb and not in_sesb[1]
+sesc_start = in_sesc and not in_sesc[1]
+sesd_start = in_sesd and not in_sesd[1]
+
+// --- Per-session trade counters (reset at each session start)
+var int sesa_trades = 0
+var int sesb_trades = 0
+var int sesc_trades = 0
+var int sesd_trades = 0
+
+if sesa_start
+    sesa_trades := 0
+if sesb_start
+    sesb_trades := 0
+if sesc_start
+    sesc_trades := 0
+if sesd_start
+    sesd_trades := 0
+
+// --- Manual limits per session
+allowed_sesa = (not in_sesa) or (sesa_trades < sesa_max_trades)
+allowed_sesb = (not in_sesb) or (sesb_trades < sesb_max_trades)
+allowed_sesc = (not in_sesc) or (sesc_trades < sesc_max_trades)
+allowed_sesd = (not in_sesd) or (sesd_trades < sesd_max_trades)
+
+// --- NEW: require at least one session active to allow ANY trade
+anySessionActive = in_sesa or in_sesb or in_sesc or in_sesd
+allowedTradeBySession = anySessionActive and allowed_sesa and allowed_sesb and allowed_sesc and allowed_sesd
+
 //-----------------------------------------------------------------------------
 // Overlays: draw session ranges & optional max/min lines
 //-----------------------------------------------------------------------------
@@ -389,15 +403,25 @@ plot(sesc_maxmin ? min_sesc : na, 'Session C Minimum', sesc_css, 1, plot.style_l
 plot(sesd_maxmin ? max_sesd : na, 'Session D Maximum', sesd_css, 1, plot.style_linebr)
 plot(sesd_maxmin ? min_sesd : na, 'Session D Minimum', sesd_css, 1, plot.style_linebr)
 
-// Wick-aware cross markers for session highs/lows
-plotshape(show_sesa and sesa_maxmin and mark_up   and crossOverAny(max_sesa), title='Cross Session A High', location=location.abovebar, color=sesa_css, style=shape.cross, size=size.tiny)
-plotshape(show_sesa and sesa_maxmin and mark_down and crossUnderAny(min_sesa), title='Cross Session A Low',  location=location.belowbar, color=sesa_css, style=shape.cross, size=size.tiny)
-plotshape(show_sesb and sesb_maxmin and mark_up   and crossOverAny(max_sesb), title='Cross Session B High', location=location.abovebar, color=sesb_css, style=shape.cross, size=size.tiny)
-plotshape(show_sesb and sesb_maxmin and mark_down and crossUnderAny(min_sesb), title='Cross Session B Low',  location=location.belowbar, color=sesb_css, style=shape.cross, size=size.tiny)
-plotshape(show_sesc and sesc_maxmin and mark_up   and crossOverAny(max_sesc), title='Cross Session C High', location=location.abovebar, color=sesc_css, style=shape.cross, size=size.tiny)
-plotshape(show_sesc and sesc_maxmin and mark_down and crossUnderAny(min_sesc), title='Cross Session C Low',  location=location.belowbar, color=sesc_css, style=shape.cross, size=size.tiny)
-plotshape(show_sesd and sesd_maxmin and mark_up   and crossOverAny(max_sesd), title='Cross Session D High', location=location.abovebar, color=sesd_css, style=shape.cross, size=size.tiny)
-plotshape(show_sesd and sesd_maxmin and mark_down and crossUnderAny(min_sesd), title='Cross Session D Low',  location=location.belowbar, color=sesd_css, style=shape.cross, size=size.tiny)
+// === Session cross booleans (NOW generic: ta.cross) ===
+sa_high_cross = show_sesa and sesa_maxmin and ta.cross(close, max_sesa)
+sa_low_cross  = show_sesa and sesa_maxmin and ta.cross(close, min_sesa)
+sb_high_cross = show_sesb and sesb_maxmin and ta.cross(close, max_sesb)
+sb_low_cross  = show_sesb and sesb_maxmin and ta.cross(close, min_sesb)
+sc_high_cross = show_sesc and sesc_maxmin and ta.cross(close, max_sesc)
+sc_low_cross  = show_sesc and sesc_maxmin and ta.cross(close, min_sesc)
+sd_high_cross = show_sesd and sesd_maxmin and ta.cross(close, max_sesd)
+sd_low_cross  = show_sesd and sesd_maxmin and ta.cross(close, min_sesd)
+
+// Visual cross markers for session highs and lows (optional)
+plotshape(sa_high_cross,  title='Cross Session A High', location=location.abovebar, color=sesa_css, style=shape.cross, size=size.tiny)
+plotshape(sa_low_cross,   title='Cross Session A Low',  location=location.belowbar, color=sesa_css, style=shape.cross, size=size.tiny)
+plotshape(sb_high_cross,  title='Cross Session B High', location=location.abovebar, color=sesb_css, style=shape.cross, size=size.tiny)
+plotshape(sb_low_cross,   title='Cross Session B Low',  location=location.belowbar, color=sesb_css, style=shape.cross, size=size.tiny)
+plotshape(sc_high_cross,  title='Cross Session C High', location=location.abovebar, color=sesc_css, style=shape.cross, size=size.tiny)
+plotshape(sc_low_cross,   title='Cross Session C Low',  location=location.belowbar, color=sesc_css, style=shape.cross, size=size.tiny)
+plotshape(sd_high_cross,  title='Cross Session D High', location=location.abovebar, color=sesd_css, style=shape.cross, size=size.tiny)
+plotshape(sd_low_cross,   title='Cross Session D Low',  location=location.belowbar, color=sesd_css, style=shape.cross, size=size.tiny)
 
 //-----------------------------------------------------------------------------
 // Previous period key levels
@@ -406,15 +430,12 @@ prev_day_high  = request.security(syminfo.tickerid, 'D', high[1], lookahead = ba
 prev_day_low   = request.security(syminfo.tickerid, 'D', low[1],  lookahead = barmerge.lookahead_on)
 prev_week_high = request.security(syminfo.tickerid, 'W', high[1], lookahead = barmerge.lookahead_on)
 prev_week_low  = request.security(syminfo.tickerid, 'W', low[1],  lookahead = barmerge.lookahead_on)
-
 is_new_day  = ta.change(time('D'))
 is_new_week = ta.change(time('W'))
-
 var line pdh_line = na
 var line pdl_line = na
 var line pwh_line = na
 var line pwl_line = na
-
 if is_new_day
     line.delete(pdh_line)
     line.delete(pdl_line)
@@ -422,26 +443,22 @@ if is_new_day
         pdh_line := line.new(bar_index, prev_day_high, bar_index, prev_day_high, extend = extend.none, color = pdh_color)
     if show_pdl
         pdl_line := line.new(bar_index, prev_day_low, bar_index, prev_day_low, extend = extend.none, color = pdl_color)
-
 if show_pdh and na(pdh_line)
     pdh_line := line.new(bar_index, prev_day_high, bar_index, prev_day_high, extend = extend.none, color = pdh_color)
 if show_pdl and na(pdl_line)
     pdl_line := line.new(bar_index, prev_day_low, bar_index, prev_day_low, extend = extend.none, color = pdl_color)
-
 if show_pdh and not na(pdh_line)
     line.set_x2(pdh_line, bar_index)
     line.set_color(pdh_line, pdh_color)
 else
     line.delete(pdh_line)
     pdh_line := na
-
 if show_pdl and not na(pdl_line)
     line.set_x2(pdl_line, bar_index)
     line.set_color(pdl_line, pdl_color)
 else
     line.delete(pdl_line)
     pdl_line := na
-
 if is_new_week
     line.delete(pwh_line)
     line.delete(pwl_line)
@@ -449,19 +466,16 @@ if is_new_week
         pwh_line := line.new(bar_index, prev_week_high, bar_index, prev_week_high, extend = extend.none, color = pwh_color)
     if show_pwl
         pwl_line := line.new(bar_index, prev_week_low, bar_index, prev_week_low, extend = extend.none, color = pwl_color)
-
 if show_pwh and na(pwh_line)
     pwh_line := line.new(bar_index, prev_week_high, bar_index, prev_week_high, extend = extend.none, color = pwh_color)
 if show_pwl and na(pwl_line)
     pwl_line := line.new(bar_index, prev_week_low, bar_index, prev_week_low, extend = extend.none, color = pwl_color)
-
 if show_pwh and not na(pwh_line)
     line.set_x2(pwh_line, bar_index)
     line.set_color(pwh_line, pwh_color)
 else
     line.delete(pwh_line)
     pwh_line := na
-
 if show_pwl and not na(pwl_line)
     line.set_x2(pwl_line, bar_index)
     line.set_color(pwl_line, pwl_color)
@@ -469,25 +483,155 @@ else
     line.delete(pwl_line)
     pwl_line := na
 
-// Wick-aware markers for prev day/week
-plotshape(show_pdh and mark_up   and crossOverAny(prev_day_high),  title='Cross Prev Day High',   location=location.abovebar, color=pdh_color, style=shape.cross, size=size.tiny)
-plotshape(show_pdl and mark_down and crossUnderAny(prev_day_low),  title='Cross Prev Day Low',    location=location.belowbar, color=pdl_color, style=shape.cross, size=size.tiny)
-plotshape(show_pwh and mark_up   and crossOverAny(prev_week_high), title='Cross Prev Week High',  location=location.abovebar, color=pwh_color, style=shape.cross, size=size.tiny)
-plotshape(show_pwl and mark_down and crossUnderAny(prev_week_low), title='Cross Prev Week Low',   location=location.belowbar, color=pwl_color, style=shape.cross, size=size.tiny)
+// === Previous period cross booleans (NOW generic: ta.cross) ===
+pdh_cross_up = show_pdh and ta.cross(close, prev_day_high)
+pdl_cross_dn = show_pdl and ta.cross(close, prev_day_low)
+pwh_cross_up = show_pwh and ta.cross(close, prev_week_high)
+pwl_cross_dn = show_pwl and ta.cross(close, prev_week_low)
+
+// Visual cross markers (optional)
+plotshape(pdh_cross_up,  title='Cross Prev Day High',  location=location.abovebar, color=pdh_color, style=shape.cross, size=size.tiny)
+plotshape(pdl_cross_dn,  title='Cross Prev Day Low',   location=location.belowbar,  color=pdl_color, style=shape.cross, size=size.tiny)
+plotshape(pwh_cross_up,  title='Cross Prev Week High', location=location.abovebar, color=pwh_color, style=shape.cross, size=size.tiny)
+plotshape(pwl_cross_dn,  title='Cross Prev Week Low',  location=location.belowbar, color=pwl_color, style=shape.cross, size=size.tiny)
+
+// ============================================================================
+// === One-trade-per-key-level-cross gating ===================================
+// (Modified so that key-level cross is only required to REARM after a STOP-OUT)
+// ============================================================================
+anyKeyLevelCross = sa_high_cross or sa_low_cross or sb_high_cross or sb_low_cross or sc_high_cross or sc_low_cross or sd_high_cross or sd_low_cross or pdh_cross_up or pdl_cross_dn or pwh_cross_up or pwl_cross_dn
+newCross = anyKeyLevelCross and not anyKeyLevelCross[1]
+
+// === REARM AFTER STOP-OUT state ===
+var bool requireCrossToRearm = false   // becomes true right after a stop-out; next trade requires a fresh cross
+var float lastStopAt = na             // remembers the last active stop while in position
+
+// Only arm when a cross happens AND a rearm is required
+if newCross and requireCrossToRearm
+    crossCycle += 1
+    armedForTrade := true
+
+// ============================================================================
+// === SELL / BUY signals + entries (labels directional & one per level) ======
+var float entryPrice = na
+var float stopPrice  = na
+var bool  lineBelowEntry = false
+var bool  lineAboveEntry = false
+
+f_stopFromBearLeg() =>
+    int i = 0
+    while i < 100 and close[i] < open[i]
+        i += 1
+    high[i - 1]
+
+f_stopFromBullLeg() =>
+    int i = 0
+    while i < 100 and close[i] > open[i]
+        i += 1
+    low[i - 1]
+
+// Current CISD levels
+bearishCisdLevel = latestMinusCISD
+bullishCisdLevel = latestPlusCISD
+
+// --- (Legacy) raw & reuse signals (kept for reference; entries now use label logic only)
+sellSig_raw = not na(bearishCisdLevel) and ta.crossunder(close, bearishCisdLevel) and (close < open)
+buySig_raw  = not na(bullishCisdLevel) and ta.crossover(close,  bullishCisdLevel) and (close > open)
+
+plusBuySigReuse   = allow_reuse and plusReusable  and not na(latestPlusCISD)  and (ta.crossover(close, latestPlusCISD)  and close > open or ta.crossunder(close, latestPlusCISD) and close < open)
+minusSellSigReuse = allow_reuse and minusReusable and not na(latestMinusCISD) and (ta.crossunder(close, latestMinusCISD) and close < open or ta.crossover(close, latestMinusCISD)  and close > open)
+
+buySigFinal  = buySig_raw  or plusBuySigReuse
+sellSigFinal = sellSig_raw or minusSellSigReuse
+
+// --- LABEL RULE: one per level, directional mapping
+var float plusLevelKey  = na
+var bool  plusBuyLabelFired  = false
+var float minusLevelKey = na
+var bool  minusSellLabelFired = false
+
+if not na(latestPlusCISD)
+    if na(plusLevelKey) or latestPlusCISD != plusLevelKey
+        plusLevelKey := latestPlusCISD
+        plusBuyLabelFired := false
+if not na(latestMinusCISD)
+    if na(minusLevelKey) or latestMinusCISD != minusLevelKey
+        minusLevelKey := latestMinusCISD
+        minusSellLabelFired := false
+
+// --- Extract label logic (independent of display toggle)
+buyLabelLogic  = (not plusBuyLabelFired)  and not na(bullishCisdLevel) and ta.crossover(close, bullishCisdLevel)  and (close > open)
+sellLabelLogic = (not minusSellLabelFired) and not na(bearishCisdLevel) and ta.crossunder(close, bearishCisdLevel) and (close < open)
+
+// --- Rendering-only conditions
+buyLabelCond  = show_signal_labels and buyLabelLogic
+sellLabelCond = show_signal_labels and sellLabelLogic
+
+if buyLabelCond
+    label.new(bar_index, low, "BUY", style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white, size=size.tiny)
+    plusBuyLabelFired := true
+
+if sellLabelCond
+    label.new(bar_index, high, "SELL", style=label.style_label_down, color=color.red, textcolor=color.white, size=size.tiny)
+    minusSellLabelFired := true
+
+// === Entry gating updated: only require cross AFTER stop-out ===
+canEnterNow = allowedTradeBySession and strategy.position_size == 0 and ((not requireCrossToRearm) or (requireCrossToRearm and armedForTrade))
+
+sellCond = sellLabelLogic
+if sellCond and canEnterNow
+    stopPrice := f_stopFromBearLeg()
+    entryPrice := close
+    lineBelowEntry := false
+    strategy.entry("Short", strategy.short)
+    // Ensure one-per-level semantics even if labels hidden
+    if not show_signal_labels
+        minusSellLabelFired := true
+    if in_sesa
+        sesa_trades += 1
+    if in_sesb
+        sesb_trades += 1
+    if in_sesc
+        sesc_trades += 1
+    if in_sesd
+        sesd_trades += 1
+    // consume the rearm token if it was required
+    armedForTrade := false
+
+buyCond  = buyLabelLogic
+if buyCond and canEnterNow
+    stopPrice := f_stopFromBullLeg()
+    entryPrice := close
+    lineAboveEntry := false
+    strategy.entry("Long", strategy.long)
+    // Ensure one-per-level semantics even if labels hidden
+    if not show_signal_labels
+        plusBuyLabelFired := true
+    if in_sesa
+        sesa_trades += 1
+    if in_sesb
+        sesb_trades += 1
+    if in_sesc
+        sesc_trades += 1
+    if in_sesd
+        sesd_trades += 1
+    // consume the rearm token if it was required
+    armedForTrade := false
+
+alertcondition(sellCond, title="SELL: CISD label-triggered", message="SELL: CISD signal on {{ticker}} {{interval}} at {{close}}")
+alertcondition(buyCond,  title="BUY: CISD label-triggered",  message="BUY: CISD signal on {{ticker}} {{interval}} at {{close}}")
 
 // ============================================================================
 // === Fair Value Gaps (visuals only) =========================================
-// ============================================================================
 bfvg = low > high[2] and (not fvg_consistency or (close > open and close[1] > open[1] and close[2] > open[2]))
 sfvg = high < low[2] and (not fvg_consistency or (close < open and close[1] < open[1] and close[2] < open[2]))
 if show_fvg and bfvg
-    box.new(n - 2, low, n + fvg_extend, high[2], border_color=color.new(color.gray, 100), bgcolor=color.new(fvg_up_color, 85))
+    box.new(n - 2, low, n + fvg_extend, high[2], border_color = color.new(color.gray, 100), bgcolor = color.new(fvg_up_color, 85))
 if show_fvg and sfvg
-    box.new(n - 2, high, n + fvg_extend, low[2], border_color=color.new(color.gray, 100), bgcolor=color.new(fvg_down_color, 85))
+    box.new(n - 2, high, n + fvg_extend, low[2], border_color = color.new(color.gray, 100), bgcolor = color.new(fvg_down_color, 85))
 
 // ============================================================================
 // === Price Action Management Tool (Bullish + Bearish) =======================
-// ============================================================================
 selectedTimeframe_PA = input.timeframe("15", title="Select Timeframe for Price Action", options=["1", "5", "10", "15", "30", "60", "240", "D"], tooltip="Choose the timeframe for price action calculations")
 adjust_pct = input.float(0.0, "Price Action Line Adjustment (%)", minval=-100, maxval=100, step=0.1, tooltip="Adjust the Price Action Line up or down by a percentage")
 
@@ -505,18 +649,62 @@ bearishPriceAction_HTF() =>
     cond2 = isRed and close < open[1] and prevIsGreen
     cond1 or cond2 ? high : na
 
-bullishClosedHTF = request.security(
-     syminfo.tickerid, selectedTimeframe_PA,
-     ta.valuewhen(barstate.isconfirmed, bullishPriceAction_HTF(), 0),
-     lookahead=barmerge.lookahead_off)
-
-bearishClosedHTF = request.security(
-     syminfo.tickerid, selectedTimeframe_PA,
-     ta.valuewhen(barstate.isconfirmed, bearishPriceAction_HTF(), 0),
-     lookahead=barmerge.lookahead_off)
+bullishClosedHTF = request.security(syminfo.tickerid, selectedTimeframe_PA, ta.valuewhen(barstate.isconfirmed, bullishPriceAction_HTF(), 0), lookahead=barmerge.lookahead_off)
+bearishClosedHTF = request.security(syminfo.tickerid, selectedTimeframe_PA, ta.valuewhen(barstate.isconfirmed, bearishPriceAction_HTF(), 0), lookahead=barmerge.lookahead_off)
 
 bullishLine = na(bullishClosedHTF) ? na : bullishClosedHTF * (1 + adjust_pct / 100)
 bearishLine = na(bearishClosedHTF) ? na : bearishClosedHTF * (1 + adjust_pct / 100)
 
 plot(bullishLine, color=color.new(color.green, 0), title="Bullish Price Action Line", linewidth=2)
 plot(bearishLine, color=color.new(color.red, 0), title="Bearish Price Action Line", linewidth=2)
+plot(not na(stopPrice) ? stopPrice : na, title="Stop Loss", color=color.yellow, linewidth=2)
+
+// --- Strategy Management ---
+if strategy.position_size < 0
+    if not lineBelowEntry and not na(bearishLine) and bearishLine < entryPrice
+        lineBelowEntry := true
+    if lineBelowEntry and not na(bearishLine)
+        stopPrice := math.min(stopPrice, bearishLine)
+    strategy.exit("Short Stop", "Short", stop=stopPrice)
+    if lineBelowEntry and not na(bearishLine) and ta.crossover(close, bearishLine)
+        strategy.close("Short", comment="Bearish line cross")
+        entryPrice := na
+        stopPrice := na
+        lineBelowEntry := false
+
+if strategy.position_size > 0
+    if not lineAboveEntry and not na(bullishLine) and bullishLine > entryPrice
+        lineAboveEntry := true
+    if lineAboveEntry and not na(bullishLine)
+        stopPrice := math.max(stopPrice, bullishLine)
+    strategy.exit("Long Stop", "Long", stop=stopPrice)
+    if lineAboveEntry and not na(bullishLine) and ta.crossunder(close, bullishLine)
+        strategy.close("Long", comment="Bullish line cross")
+        entryPrice := na
+        stopPrice := na
+        lineAboveEntry := false
+
+// ============================================================================
+// === REARM AFTER STOP-OUT: detect stop-based exits and require a new cross ===
+// Track last stop while in position
+if strategy.position_size != 0 and not na(stopPrice)
+    lastStopAt := stopPrice
+
+// Detect transition to flat
+justFlat = strategy.position_size == 0 and strategy.position_size[1] != 0
+wasLong  = strategy.position_size[1] > 0
+wasShort = strategy.position_size[1] < 0
+
+stoppedOutLong  = justFlat and wasLong  and not na(lastStopAt[1]) and low  <= lastStopAt[1]
+stoppedOutShort = justFlat and wasShort and not na(lastStopAt[1]) and high >= lastStopAt[1]
+stoppedOut = stoppedOutLong or stoppedOutShort
+
+if stoppedOut
+    // Require a fresh key-level cross before another entry
+    requireCrossToRearm := true
+    armedForTrade := false
+    lastStopAt := na
+else if justFlat
+    // non-stop exit (e.g., line cross/TP): do not force rearm
+    lastStopAt := na
+// ============================================================================
