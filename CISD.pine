@@ -25,6 +25,11 @@ var int  crossCycle    = 0
 groupSignals = "Signals"
 show_signal_labels = input.bool(true, "Show BUY/SELL labels", group=groupSignals, tooltip="If ON, places labels on CISD signals (limited to one BUY per +CISD and one SELL per -CISD).")
 
+
+// Risk management
+groupRisk = "Risk Management"
+riskPerTrade = input.float(500, "Risk per Trade ($)", minval=0, step=1, group=groupRisk, tooltip="Dollar amount to risk on each trade.")
+
 // CISD table
 groupCISDTable  = "CISD Table"
 showTable       = input(false, title="Enable stat table", group = groupCISDTable)
@@ -609,7 +614,9 @@ if sellCond and canEnterNow
     stopPrice := f_stopFromBearLeg()
     entryPrice := close
     lineBelowEntry := false
-    strategy.entry("Short", strategy.short)
+    stopDist = math.abs(entryPrice - stopPrice)
+    tradeQty = stopDist > 0 ? riskPerTrade / stopDist : 0
+    strategy.entry("Short", strategy.short, qty=tradeQty)
     if not show_signal_labels
         minusSellLabelFired := true
     if in_sesa
@@ -627,7 +634,9 @@ if buyCond and canEnterNow
     stopPrice := f_stopFromBullLeg()
     entryPrice := close
     lineAboveEntry := false
-    strategy.entry("Long", strategy.long)
+    stopDist = math.abs(entryPrice - stopPrice)
+    tradeQty = stopDist > 0 ? riskPerTrade / stopDist : 0
+    strategy.entry("Long", strategy.long, qty=tradeQty)
     if not show_signal_labels
         plusBuyLabelFired := true
     if in_sesa
